@@ -60,13 +60,13 @@ func newApp() *cli.Command {
 				Name:      "kill",
 				Usage:     "kill a running session",
 				ArgsUsage: "<id>",
-				Action:    notImplemented,
+				Action:    killAction,
 			},
 			{
 				Name:      "history",
 				Usage:     "print the scrollback history of a session",
 				ArgsUsage: "<id>",
-				Action:    notImplemented,
+				Action:    historyAction,
 			},
 			{
 				Name:      "attach",
@@ -78,7 +78,7 @@ func newApp() *cli.Command {
 				Name:      "send",
 				Usage:     "send raw input to a session PTY without attaching",
 				ArgsUsage: "<id> <text...>",
-				Action:    notImplemented,
+				Action:    sendAction,
 			},
 			{
 				Name:      "info",

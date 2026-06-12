@@ -13,9 +13,12 @@ type Request struct {
 
 // Response is the JSON-line reply to a Request.
 type Response struct {
-	OK       bool   `json:"ok"`
-	Error    string `json:"error,omitempty"`
-	Info     *Info  `json:"info,omitempty"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+	Info  *Info  `json:"info,omitempty"`
+	// History carries the raw head+tail scrollback bytes for the "history" op,
+	// base64-encoded on the wire so arbitrary bytes survive JSON transport.
+	History  []byte `json:"history,omitempty"`
 	ExitCode *int   `json:"exit_code,omitempty"`
 }
 

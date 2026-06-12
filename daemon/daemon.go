@@ -367,6 +367,8 @@ func (s *Session) dispatch(req Request) Response {
 	case "send":
 		s.queueInput(req.Input)
 		return Response{OK: true}
+	case "history":
+		return Response{OK: true, History: s.store.Snapshot()}
 	default:
 		return Response{OK: false, Error: fmt.Sprintf("unknown op %q", req.Op)}
 	}

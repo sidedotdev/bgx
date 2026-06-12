@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -231,4 +232,59 @@ func emitExit(id string, code int) error {
 	_ = printJSON(os.Stdout, map[string]any{"id": id, "exit_code": code})
 	os.Exit(code)
 	return nil
+}
+
+func killAction(_ context.Context, cmd *cli.Command) error {
+	id := cmd.Args().First()
+	if id == "" {
+		return failJSON("kill: an id is required")
+	}
+	if resp, err := dialRequest(id, daemon.Request{Op: "kill"}); err == nil && resp.OK && resp.Info != nil {
+		return printJSON(os.Stdout, infoResult{Exists: true, Info: resp.Info})
+	}
+	if info, ok := endedRecord(id); ok {
+		return printJSON(os.Stdout, infoResult{Exists: true, Info: info})
+	}
+	return failJSON("kill: session %q not found", id)
+}
+
+// sendAction joins the trailing arguments with single spaces and writes exactly
+// those raw bytes to the session PTY, with no trailing newline; callers send any
+// terminators (e.g. a carriage return) themselves.
+func sendAction(_ context.Context, cmd *cli.Command) error {
+	args := cmd.Args().Slice()
+	if len(args) == 0 {
+		return failJSON("send: an id is required")
+	}
+	id, text := args[0], args[1:]
+	if id == "" {
+		return failJSON("send: id must not be empty")
+	}
+	resp, err := dialRequest(id, daemon.Request{Op: "send", Input: []byte(strings.Join(text, " "))})
+	if err != nil {
+		return failJSON("send: session %q not found", id)
+	}
+	if !resp.OK {
+		return failJSON("send: %s", resp.Error)
+	}
+	return printJSON(os.Stdout, map[string]any{"id": id, "sent": true})
+}
+
+// historyAction writes the raw head+tail scrollback bytes to stdout, querying a
+// live daemon first and falling back to the persisted history of an ended
+// session. Its output is intentionally not JSON.
+func historyAction(_ context.Context, cmd *cli.Command) error {
+	id := cmd.Args().First()
+	if id == "" {
+		return failJSON("history: an id is required")
+	}
+	if resp, err := dialRequest(id, daemon.Request{Op: "history"}); err == nil && resp.OK {
+		_, werr := os.Stdout.Write(resp.History)
+		return werr
+	}
+	if data, err := os.ReadFile(daemon.HistoryPath(retentionDir(), id)); err == nil {
+		_, werr := os.Stdout.Write(data)
+		return werr
+	}
+	return failJSON("history: session %q not found", id)
 }
