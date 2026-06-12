@@ -26,6 +26,9 @@ func main() {
 }
 
 func newApp() *cli.Command {
+	// run stops parsing flags after the session id so the command that follows
+	// keeps its own flags (e.g. "sh -c").
+	stopAfterID := 1
 	return &cli.Command{
 		Name:  "bgx",
 		Usage: "manage async terminal sessions",
@@ -33,16 +36,25 @@ func newApp() *cli.Command {
 		HideVersion: true,
 		Commands: []*cli.Command{
 			{
-				Name:      "run",
-				Usage:     "run a command async in a new session",
-				ArgsUsage: "<id> [--overwrite-id] [--metadata key=value...] <command...>",
-				Action:    notImplemented,
+				Name:         "run",
+				Usage:        "run a command async in a new session",
+				ArgsUsage:    "[--overwrite-id] [--metadata key=value...] <id> <command...>",
+				StopOnNthArg: &stopAfterID,
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "overwrite-id"},
+					&cli.StringSliceFlag{Name: "metadata"},
+					&cli.IntFlag{Name: "head-size"},
+					&cli.IntFlag{Name: "tail-size"},
+					&cli.StringFlag{Name: "storage"},
+					&cli.StringFlag{Name: "storage-path"},
+				},
+				Action: runAction,
 			},
 			{
 				Name:      "wait",
 				Usage:     "wait for a session to finish and return its exit code",
 				ArgsUsage: "<id>",
-				Action:    notImplemented,
+				Action:    waitAction,
 			},
 			{
 				Name:      "kill",
@@ -72,7 +84,7 @@ func newApp() *cli.Command {
 				Name:      "info",
 				Usage:     "print metadata about a session",
 				ArgsUsage: "<id>",
-				Action:    notImplemented,
+				Action:    infoAction,
 			},
 			{
 				Name:    "list",
