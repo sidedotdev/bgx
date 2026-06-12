@@ -71,5 +71,6 @@ subcommands in a black-box manner.
 
 ## Implementation
 
-Uses adrg/xdg, urfave/cli/v3 and libghostty-vt (or go bindings to it), but no
-other dependencies.
+Uses adrg/xdg, urfave/cli/v3 and libghostty-vt (or go bindings to it). Other
+dependencies are limited to those required for robustness/correctness and to
+support multiple platforms effectively.
