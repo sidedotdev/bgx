@@ -31,8 +31,10 @@ But is customized for our needs:
    10mb, avoiding too much memory bloat in the case of very high throughput
    writes where compression isn't keeping up.
 1. All commands default to json output, other than history and attach.
-1. The daemon retains the history for the last 10 sessions finished/killed per
-   workflow, writing these to a temp directory.
+1. The daemon retains the history for the last N (configurable, defaults to 10)
+   sessions finished/killed per id namespace (namespace is the part of session
+   id before first "/"), writing these to a designated tmp directory by
+   default, or other configured storage.
 1. Sessions can be tagged with an arbitrary map of metadata when created, which
    is included when sessions are listed, or used as a filter directly against
    top-level metadata keys in the list subcommand.
