@@ -27,9 +27,10 @@ const (
 	defaultFallbackBytes = 10 << 20 // 10MB
 )
 
-// chunk is a unit of retained tail data, either zstd-compressed or raw.
+// chunk is a unit of retained tail data, either zstd-compressed or raw. Its
+// payload lives in the Store's backend, referenced by handle.
 type chunk struct {
-	data       []byte
+	handle     chunkHandle
 	rawLen     int
 	compressed bool
 }
@@ -42,6 +43,8 @@ type Store struct {
 	tailSize      int
 	chunkSize     int
 	fallbackBytes int
+
+	backend backend
 
 	encoder *zstd.Encoder
 	decoder *zstd.Decoder
@@ -58,6 +61,7 @@ type Store struct {
 	totalBytes int64
 	closed     bool
 	busy       bool
+	err        error
 }
 
 // NewStore returns a Store retaining headSize leading bytes and tailSize
@@ -68,6 +72,12 @@ func NewStore(headSize, tailSize int) *Store {
 
 // newStore allows tests to use small chunk and fallback thresholds.
 func newStore(headSize, tailSize, chunkSize, fallbackBytes int) *Store {
+	return newStoreBackend(headSize, tailSize, chunkSize, fallbackBytes, memoryBackend{})
+}
+
+// newStoreBackend builds a Store backed by b, letting tests use small chunk and
+// fallback thresholds together with a specific chunk storage backend.
+func newStoreBackend(headSize, tailSize, chunkSize, fallbackBytes int, b backend) *Store {
 	if headSize <= 0 {
 		headSize = DefaultHeadSize
 	}
@@ -89,6 +99,7 @@ func newStore(headSize, tailSize, chunkSize, fallbackBytes int) *Store {
 		tailSize:      tailSize,
 		chunkSize:     chunkSize,
 		fallbackBytes: fallbackBytes,
+		backend:       b,
 		encoder:       enc,
 		decoder:       dec,
 		done:          make(chan struct{}),
@@ -125,6 +136,14 @@ func (s *Store) TotalBytes() int64 {
 	return s.totalBytes
 }
 
+// Err returns the first error the background goroutine or Snapshot encountered
+// while persisting or reading chunks, if any.
+func (s *Store) Err() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.err
+}
+
 // Snapshot returns the retained head followed by the retained tail. It waits
 // for any buffered writes to be processed so the result reflects every byte
 // written so far.
@@ -140,12 +159,17 @@ func (s *Store) Snapshot() []byte {
 	// bytes so the result is independent of the compression chunk size.
 	tail := make([]byte, 0, s.tailBytes)
 	for _, c := range s.tailChunks {
+		data, err := s.backend.get(c.handle)
+		if err != nil {
+			s.err = err
+			continue
+		}
 		if c.compressed {
-			if d, err := s.decoder.DecodeAll(c.data, nil); err == nil {
+			if d, derr := s.decoder.DecodeAll(data, nil); derr == nil {
 				tail = append(tail, d...)
 			}
 		} else {
-			tail = append(tail, c.data...)
+			tail = append(tail, data...)
 		}
 	}
 	tail = append(tail, s.tailBuf...)
@@ -174,6 +198,7 @@ func (s *Store) Close() error {
 	<-s.done
 	s.encoder.Close()
 	s.decoder.Close()
+	s.backend.close()
 	return nil
 }
 
@@ -230,21 +255,28 @@ func (s *Store) process(buf []byte) {
 
 // flushChunk finalizes the current partial chunk. When the still-unprocessed
 // backlog exceeds the fallback threshold the chunk is stored uncompressed so
-// the drain goroutine can keep up; otherwise it is zstd-compressed off-lock.
+// the drain goroutine can keep up; otherwise it is zstd-compressed. Both the
+// compression and the backend write happen with the lock released so neither
+// blocks concurrent writers.
 func (s *Store) flushChunk(backlog int) {
 	raw := s.tailBuf
-	var data []byte
-	compressed := false
-	if backlog <= s.fallbackBytes {
-		s.mu.Unlock()
+	compressed := backlog <= s.fallbackBytes
+
+	s.mu.Unlock()
+	data := raw
+	if compressed {
 		data = s.encoder.EncodeAll(raw, nil)
-		s.mu.Lock()
-		compressed = true
-	} else {
-		data = raw
 	}
-	s.tailChunks = append(s.tailChunks, chunk{data: data, rawLen: len(raw), compressed: compressed})
+	h, err := s.backend.put(data)
+	s.mu.Lock()
+
 	s.tailBuf = make([]byte, 0, s.chunkSize)
+	if err != nil {
+		s.err = err
+		s.tailBytes -= len(raw)
+		return
+	}
+	s.tailChunks = append(s.tailChunks, chunk{handle: h, rawLen: len(raw), compressed: compressed})
 	s.evict()
 }
 
@@ -253,6 +285,9 @@ func (s *Store) flushChunk(backlog int) {
 func (s *Store) evict() {
 	for len(s.tailChunks) > 1 && s.tailBytes-s.tailChunks[0].rawLen >= s.tailSize {
 		s.tailBytes -= s.tailChunks[0].rawLen
+		if err := s.backend.drop(s.tailChunks[0].handle); err != nil {
+			s.err = err
+		}
 		s.tailChunks = s.tailChunks[1:]
 	}
 }
