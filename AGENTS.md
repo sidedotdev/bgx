@@ -14,8 +14,10 @@ infer, but can not treat it as the source of truth. Ensure this intent is highly
 concise, containing only consequential and high-level intent inferences rather
 than every minor detail that will show up in the code itself.
 
-LLMs are NOT ALLOWED to edit intent/* files, only intent/.generated/* files.
-Non-generated intent files are purely human-authored.
+LLMs are NOT ALLOWED to author/edit intent/* files (exception: intent links in
+the frontmatter are meant to be LLM-edited). They may author/edit
+intent/.generated/* files. Non-generated intent files are purely human-authored
+other than intent links.
 
 Intent markdown files can carry YAML frontmatter, notably an `intent_links`
 field: a list of entries linking intent sections to code symbols/files, each
