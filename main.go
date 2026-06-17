@@ -72,7 +72,7 @@ func newApp() *cli.Command {
 				Name:      "attach",
 				Usage:     "attach to a running session",
 				ArgsUsage: "<id>",
-				Action:    notImplemented,
+				Action:    attachAction,
 			},
 			{
 				Name:      "send",

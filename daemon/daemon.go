@@ -12,6 +12,7 @@
 package daemon
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -73,6 +74,10 @@ type Session struct {
 	done     chan struct{} // closed when the command has exited and been reaped
 	outDone  chan struct{} // closed when all PTY output has been consumed
 
+	// outMu serializes terminal writes with output fanout and attach snapshots
+	// so a newly attached client neither misses nor duplicates output.
+	outMu sync.Mutex
+
 	mu          sync.Mutex
 	cond        *sync.Cond
 	cmd         *exec.Cmd
@@ -86,6 +91,8 @@ type Session struct {
 	clientCount int
 	inputBuf    []byte
 	conns       sync.WaitGroup
+	attachers   map[*attacher]struct{}
+	leader      *attacher
 }
 
 // Serve runs the configured command to completion: it creates the socket,
@@ -178,11 +185,12 @@ func newSession(cfg Config) (*Session, error) {
 		return nil, err
 	}
 	s := &Session{
-		cfg:     cfg,
-		store:   store,
-		term:    term,
-		done:    make(chan struct{}),
-		outDone: make(chan struct{}),
+		cfg:       cfg,
+		store:     store,
+		term:      term,
+		done:      make(chan struct{}),
+		outDone:   make(chan struct{}),
+		attachers: make(map[*attacher]struct{}),
 	}
 	s.cond = sync.NewCond(&s.mu)
 	return s, nil
@@ -252,7 +260,10 @@ func (s *Session) pumpOutput() {
 		if n > 0 {
 			data := buf[:n]
 			s.store.Write(data)
+			s.outMu.Lock()
 			s.term.Write(data)
+			s.fanout(data)
+			s.outMu.Unlock()
 			if s.noClients() {
 				if resp := scanDeviceAttributes(data); len(resp) > 0 {
 					s.queueInput(resp)
@@ -355,10 +366,24 @@ func (s *Session) acceptLoop() {
 	}
 }
 
+// handle serves a single accepted connection. Most ops are one request/response
+// over JSON lines; an "attach" request instead upgrades the connection to the
+// bidirectional frame protocol for the remainder of its lifetime.
 func (s *Session) handle(conn net.Conn) {
 	defer conn.Close()
+	// Read exactly the request line so its trailing newline is consumed and the
+	// reader can be reused for binary attach frames without corrupting framing.
+	br := bufio.NewReader(conn)
+	line, err := br.ReadBytes('\n')
+	if err != nil && len(line) == 0 {
+		return
+	}
 	var req Request
-	if err := json.NewDecoder(conn).Decode(&req); err != nil {
+	if err := json.Unmarshal(line, &req); err != nil {
+		return
+	}
+	if req.Op == "attach" {
+		s.serveAttach(conn, br)
 		return
 	}
 	resp := s.dispatch(req)

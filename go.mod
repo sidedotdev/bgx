@@ -8,6 +8,7 @@ require (
 	github.com/klauspost/compress v1.18.6
 	github.com/urfave/cli/v3 v3.9.1
 	go.mitchellh.com/libghostty v0.0.0-20260528200934-790a3ff6e9f6
+	golang.org/x/term v0.35.0
 )
 
-require golang.org/x/sys v0.26.0 // indirect
+require golang.org/x/sys v0.36.0 // indirect
