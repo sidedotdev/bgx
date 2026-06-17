@@ -1,3 +1,41 @@
+---
+intent_links:
+  - intent: "#bgx"
+    code:
+      - main.go
+      - daemon/daemon.go
+      - scrollback/store.go
+      - vt/vt.go
+      - client.go
+  - intent: "#commands"
+    code:
+      - main.go:newApp
+      - client.go:runAction
+      - client.go:waitAction
+      - client.go:killAction
+      - client.go:historyAction
+      - client.go:sendAction
+      - client.go:infoAction
+      - client.go:listAction
+      - attach.go:attachAction
+      - main.go:versionAction
+  - intent: "#testing--verification"
+    code:
+      - e2e/run_test.go
+      - e2e/kill_send_history_test.go
+      - e2e/attach_test.go
+      - e2e/list_test.go
+      - e2e/version_test.go
+  - intent: "#implementation"
+    code:
+      - main.go:daemonCommand
+      - daemon/daemon.go:Serve
+      - daemon/protocol.go
+      - daemon/frame.go
+      - scrollback/backend.go
+      - vt/vt.go
+---
+
 # bgx
 
 bgx is a terminal session management cli tool similar to screen/tmux, but
