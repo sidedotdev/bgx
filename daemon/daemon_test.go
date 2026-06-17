@@ -1,13 +1,19 @@
 package daemon
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/sidedotdev/bgx/scrollback"
+	"github.com/sidedotdev/bgx/vt"
 )
 
 // startSession runs Serve for cmd in the background and returns the socket and
@@ -254,4 +260,188 @@ func TestUnknownOp(t *testing.T) {
 	}
 	roundTrip(t, socketPath, Request{Op: "kill"})
 	<-errCh
+}
+
+// TestAttachSnapshotStreamCoversEntireOutput is a race torture test for the
+// attach handoff. A client that joins a live session gets a point-in-time
+// rendered snapshot followed by the raw output stream; if the snapshot and the
+// stream subscription are not captured atomically, output produced in the gap
+// is either lost (in neither) or duplicated (in both). Many clients attach at
+// staggered moments while a producer floods the PTY, and each client's snapshot
+// plus stream must exactly tile the session's complete output: the stream must
+// be a clean suffix of the full output and the snapshot must equal the
+// rendering of the preceding prefix. Both checks are verified against the full
+// scrollback history, which retains every byte here.
+func TestAttachSnapshotStreamCoversEntireOutput(t *testing.T) {
+	const (
+		clients  = 24
+		lines    = 8000
+		sentinel = "ZZSENTINELZZ"
+	)
+	sentinelBytes := []byte(sentinel)
+	// A deliberately slow shell loop dribbles distinct, sequentially numbered
+	// lines, keeping output in flight throughout every client's attach handoff
+	// while the low instantaneous rate keeps each client's bounded backlog from
+	// overflowing (which would disconnect it — a separate concern). The final
+	// sentinel line marks end of output, and the trailing sleep keeps the
+	// session alive so clients drain in full before it is killed (output dropped
+	// during session shutdown is likewise a separate concern).
+	shCmd := fmt.Sprintf(`i=0; while [ $i -lt %d ]; do printf 'ln%%05d\n' "$i"; i=$((i+1)); done; printf '%s\n'; sleep 30`, lines, sentinel)
+	s, socketPath, _, errCh := startTortureSession(t, "torture", []string{"sh", "-c", shCmd})
+
+	type capture struct {
+		snapshot []byte
+		stream   []byte
+	}
+	caps := make([]capture, clients)
+	var wg sync.WaitGroup
+	for i := 0; i < clients; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			caps[i].snapshot, caps[i].stream = attachCapture(t, socketPath, sentinelBytes)
+		}()
+		// Stagger so attaches land at many different points in the stream.
+		time.Sleep(time.Millisecond)
+	}
+	wg.Wait()
+
+	// Snapshot the complete output as ground truth while the session is still
+	// alive (the history op waits for all buffered writes), then stop it.
+	resp := roundTrip(t, socketPath, Request{Op: "history"})
+	if !resp.OK {
+		t.Fatalf("history op failed: %q", resp.Error)
+	}
+	full := resp.History
+	s.kill()
+	<-errCh
+	if !bytes.Contains(full, sentinelBytes) {
+		t.Fatalf("session output (%d bytes) never contained the sentinel", len(full))
+	}
+
+	for i, c := range caps {
+		assertAttachTiles(t, i, full, c.snapshot, c.stream)
+	}
+}
+
+// startTortureSession runs a session whose scrollback head is large enough to
+// retain the entire run, making its history the exact ground truth for every
+// byte the PTY emitted.
+func startTortureSession(t *testing.T, id string, cmd []string) (s *Session, socketPath, retentionDir string, errCh chan error) {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "d")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	socketPath = filepath.Join(dir, "sock")
+	retentionDir = filepath.Join(dir, "ended")
+	cfg := Config{
+		ID:           id,
+		Command:      cmd,
+		SocketPath:   socketPath,
+		RetentionDir: retentionDir,
+		Scrollback:   scrollback.Config{HeadSize: 16 << 20, TailSize: 1 << 20},
+	}
+	s, err = newSession(cfg)
+	if err != nil {
+		t.Fatalf("new session: %v", err)
+	}
+	errCh = make(chan error, 1)
+	go func() { errCh <- s.run() }()
+	waitForSocket(t, socketPath)
+	return s, socketPath, retentionDir, errCh
+}
+
+// attachCapture performs the attach handshake and records the snapshot (the
+// first Output frame) and the subsequent raw stream, stopping once the final
+// sentinel line has fully arrived so the captured stream ends exactly where the
+// session output does.
+func attachCapture(t *testing.T, socketPath string, sentinel []byte) (snapshot, stream []byte) {
+	t.Helper()
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Errorf("dial: %v", err)
+		return nil, nil
+	}
+	defer conn.Close()
+	br := bufio.NewReader(conn)
+	if err := json.NewEncoder(conn).Encode(Request{Op: "attach"}); err != nil {
+		t.Errorf("attach encode: %v", err)
+		return nil, nil
+	}
+	line, err := br.ReadBytes('\n')
+	if err != nil {
+		t.Errorf("attach handshake: %v", err)
+		return nil, nil
+	}
+	var resp Response
+	if err := json.Unmarshal(line, &resp); err != nil || !resp.OK {
+		t.Errorf("attach response: err=%v line=%q", err, line)
+		return nil, nil
+	}
+
+	gotSnapshot := false
+	for {
+		tag, payload, err := ReadFrame(br)
+		if err != nil {
+			break
+		}
+		if tag != FrameOutput {
+			continue
+		}
+		if !gotSnapshot {
+			gotSnapshot = true
+			snapshot = payload
+			if bytes.Contains(snapshot, sentinel) {
+				break
+			}
+			continue
+		}
+		stream = append(stream, payload...)
+		// The sentinel is the last line, so once it and a following newline are
+		// present the stream has captured everything up to end of output.
+		if i := bytes.Index(stream, sentinel); i >= 0 && bytes.IndexByte(stream[i+len(sentinel):], '\n') >= 0 {
+			break
+		}
+	}
+	_ = WriteFrame(conn, FrameDetach, nil)
+	return snapshot, stream
+}
+
+// assertAttachTiles verifies a single client's snapshot and stream tile the full
+// output exactly: the stream is a clean suffix and the snapshot equals the
+// rendering of the preceding prefix.
+func assertAttachTiles(t *testing.T, idx int, full, snapshot, stream []byte) {
+	t.Helper()
+	if len(stream) > len(full) || !bytes.Equal(full[len(full)-len(stream):], stream) {
+		t.Errorf("client %d: streamed output is not a suffix of the session output (stream=%dB, full=%dB); output was lost or duplicated during the attach handoff", idx, len(stream), len(full))
+		return
+	}
+	prefix := full[:len(full)-len(stream)]
+	want := renderTorture(t, prefix)
+	if !bytes.Equal(want, snapshot) {
+		t.Errorf("client %d: snapshot does not equal the rendering of the %dB pre-attach prefix (snapshot=%dB, want=%dB); output was lost or duplicated during the attach handoff", idx, len(prefix), len(snapshot), len(want))
+	}
+}
+
+// renderTorture renders data through a fresh terminal sized like the session's,
+// reproducing the snapshot the daemon would have sent at that point in the
+// stream.
+func renderTorture(t *testing.T, data []byte) []byte {
+	t.Helper()
+	term, err := vt.New(defaultCols, defaultRows)
+	if err != nil {
+		t.Fatalf("vt new: %v", err)
+	}
+	defer term.Close()
+	if _, err := term.Write(data); err != nil {
+		t.Fatalf("vt write: %v", err)
+	}
+	dump, err := term.DumpScreen()
+	if err != nil {
+		t.Fatalf("dump screen: %v", err)
+	}
+	return dump
 }

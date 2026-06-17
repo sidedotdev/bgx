@@ -1,1 +1,4 @@
 /.libghostty/
+
+# Go test binaries produced by `go test -c`.
+*.test

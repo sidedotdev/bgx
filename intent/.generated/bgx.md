@@ -15,6 +15,11 @@ intent_links:
     code:
       - vt/vt.go:Terminal
       - daemon/daemon.go:Session
+  - intent: "#attach-handoff"
+    code:
+      - daemon/attach.go:serveAttach
+      - daemon/daemon.go:pumpOutput
+      - daemon/daemon_test.go:TestAttachSnapshotStreamCoversEntireOutput
   - intent: "#send-and-wait-semantics"
     code:
       - client.go:sendAction
@@ -59,6 +64,19 @@ alongside the scrollback store, fixed at an 80x24 default size. Attach uses
 `DumpScreen` for the initial snapshot; the attach leader controls PTY and vt
 size via Resize frames. The daemon answers Device Attributes queries itself when
 no client is attached so interactive programs don't hang.
+
+## Attach handoff
+
+A client joining a live session receives a point-in-time `DumpScreen` snapshot
+followed by the raw output stream. To avoid losing or duplicating output
+produced between rendering the snapshot and subscribing to the stream,
+`serveAttach` captures the snapshot and joins the output fanout under the same
+`outMu` that `pumpOutput` holds while writing each chunk to the terminal and
+fanning it out. Each PTY chunk therefore lands entirely before the snapshot
+(reflected in it, not streamed) or entirely after the subscription (streamed,
+not in the snapshot), so a client's snapshot and stream tile the full session
+output with no gap or overlap. `TestAttachSnapshotStreamCoversEntireOutput` is
+the torture test guarding this invariant.
 
 ## Send and wait semantics
 
