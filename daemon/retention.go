@@ -5,12 +5,18 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 )
 
 // globalNamespaceDir is the retention subdirectory holding records for ids that
 // contain no "/" and therefore share a single global namespace.
 const globalNamespaceDir = "_global"
+
+// DefaultRetentionCount is the number of most recently ended sessions retained
+// per id namespace when a session does not configure its own limit.
+const DefaultRetentionCount = 10
 
 // Namespace returns the retention namespace for a session id: the portion
 // before the first "/". Ids without a "/" all share a single global namespace,
@@ -63,4 +69,59 @@ func writeRecord(retentionDir string, info *Info, history []byte) error {
 		return err
 	}
 	return os.WriteFile(HistoryPath(retentionDir, info.ID), history, 0o600)
+}
+
+// pruneRetention keeps only the newest keep ended-session records (and their
+// histories) in id's namespace directory, deleting the oldest beyond that. A
+// non-positive keep falls back to DefaultRetentionCount.
+func pruneRetention(retentionDir, id string, keep int) error {
+	if keep <= 0 {
+		keep = DefaultRetentionCount
+	}
+	dir := namespaceDir(retentionDir, id)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	type record struct {
+		base  string
+		ended time.Time
+	}
+	var records []record
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		base := strings.TrimSuffix(e.Name(), ".json")
+		records = append(records, record{base: base, ended: recordEndedAt(filepath.Join(dir, e.Name()))})
+	}
+	if len(records) <= keep {
+		return nil
+	}
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].ended.After(records[j].ended)
+	})
+	for _, r := range records[keep:] {
+		os.Remove(filepath.Join(dir, r.base+".json"))
+		os.Remove(filepath.Join(dir, r.base+".history"))
+	}
+	return nil
+}
+
+// recordEndedAt reads a persisted record's end time, falling back to the file's
+// modification time when the record is unreadable or lacks an end time.
+func recordEndedAt(path string) time.Time {
+	if data, err := os.ReadFile(path); err == nil {
+		var info Info
+		if json.Unmarshal(data, &info) == nil && info.EndedAt != nil {
+			return *info.EndedAt
+		}
+	}
+	if fi, err := os.Stat(path); err == nil {
+		return fi.ModTime()
+	}
+	return time.Time{}
 }

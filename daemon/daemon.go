@@ -56,12 +56,13 @@ const (
 
 // Config describes the session a daemon serves.
 type Config struct {
-	ID           string
-	Command      []string
-	Metadata     map[string]string
-	SocketPath   string
-	RetentionDir string
-	Scrollback   scrollback.Config
+	ID             string
+	Command        []string
+	Metadata       map[string]string
+	SocketPath     string
+	RetentionDir   string
+	RetentionCount int
+	Scrollback     scrollback.Config
 }
 
 // Session holds the runtime state of a running command and serves its socket.
@@ -498,7 +499,10 @@ func (s *Session) persist() error {
 	if s.cfg.RetentionDir == "" {
 		return nil
 	}
-	return writeRecord(s.cfg.RetentionDir, s.info(), s.store.Snapshot())
+	if err := writeRecord(s.cfg.RetentionDir, s.info(), s.store.Snapshot()); err != nil {
+		return err
+	}
+	return pruneRetention(s.cfg.RetentionDir, s.cfg.ID, s.cfg.RetentionCount)
 }
 
 // conventionalExitCode maps a command's wait error to an exit code, using the

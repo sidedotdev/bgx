@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -159,6 +160,9 @@ func spawnDaemon(id string, command, metadata []string, cmd *cli.Command) error 
 	if v := cmd.String("storage-path"); v != "" {
 		args = append(args, "--storage-path", v)
 	}
+	if v := cmd.Int("retention"); v > 0 {
+		args = append(args, "--retention", strconv.Itoa(v))
+	}
 	for _, m := range metadata {
 		args = append(args, "--metadata", m)
 	}
@@ -287,4 +291,103 @@ func historyAction(_ context.Context, cmd *cli.Command) error {
 		return werr
 	}
 	return failJSON("history: session %q not found", id)
+}
+
+func listAction(_ context.Context, cmd *cli.Command) error {
+	filters, err := parseMetadata(cmd.StringSlice("metadata"))
+	if err != nil {
+		return failJSON("list: %v", err)
+	}
+
+	byID := make(map[string]*daemon.Info)
+	for _, info := range listRunning() {
+		byID[info.ID] = info
+	}
+	for _, info := range listEnded() {
+		if _, ok := byID[info.ID]; !ok {
+			byID[info.ID] = info
+		}
+	}
+
+	out := []*daemon.Info{}
+	for _, info := range byID {
+		if matchesMetadata(info, filters) {
+			out = append(out, info)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return printJSON(os.Stdout, out)
+}
+
+// listRunning queries every live session socket, cleaning up sockets that no
+// daemon answers on so a crashed session doesn't linger in listings.
+func listRunning() []*daemon.Info {
+	dir := socketDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []*daemon.Info
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".sock") {
+			continue
+		}
+		id, err := url.QueryUnescape(strings.TrimSuffix(name, ".sock"))
+		if err != nil {
+			continue
+		}
+		if info, ok := liveInfo(id); ok {
+			out = append(out, info)
+			continue
+		}
+		os.Remove(filepath.Join(dir, name))
+	}
+	return out
+}
+
+// listEnded reads every persisted ended-session record across all namespaces.
+func listEnded() []*daemon.Info {
+	base := retentionDir()
+	namespaces, err := os.ReadDir(base)
+	if err != nil {
+		return nil
+	}
+	var out []*daemon.Info
+	for _, ns := range namespaces {
+		if !ns.IsDir() {
+			continue
+		}
+		nsPath := filepath.Join(base, ns.Name())
+		records, err := os.ReadDir(nsPath)
+		if err != nil {
+			continue
+		}
+		for _, r := range records {
+			if r.IsDir() || !strings.HasSuffix(r.Name(), ".json") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(nsPath, r.Name()))
+			if err != nil {
+				continue
+			}
+			var info daemon.Info
+			if json.Unmarshal(data, &info) != nil {
+				continue
+			}
+			info.Running = false
+			out = append(out, &info)
+		}
+	}
+	return out
+}
+
+// matchesMetadata reports whether info's metadata satisfies every filter.
+func matchesMetadata(info *daemon.Info, filters map[string]string) bool {
+	for k, v := range filters {
+		if info.Metadata[k] != v {
+			return false
+		}
+	}
+	return true
 }

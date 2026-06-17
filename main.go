@@ -47,6 +47,7 @@ func newApp() *cli.Command {
 					&cli.IntFlag{Name: "tail-size"},
 					&cli.StringFlag{Name: "storage"},
 					&cli.StringFlag{Name: "storage-path"},
+					&cli.IntFlag{Name: "retention", Sources: cli.EnvVars("BGX_RETENTION")},
 				},
 				Action: runAction,
 			},
@@ -90,7 +91,10 @@ func newApp() *cli.Command {
 				Name:    "list",
 				Aliases: []string{"ls"},
 				Usage:   "list sessions",
-				Action:  notImplemented,
+				Flags: []cli.Flag{
+					&cli.StringSliceFlag{Name: "metadata"},
+				},
+				Action: listAction,
 			},
 			{
 				Name:   "version",
@@ -146,6 +150,7 @@ func daemonCommand() *cli.Command {
 			&cli.StringFlag{Name: "id", Required: true},
 			&cli.StringFlag{Name: "socket", Required: true},
 			&cli.StringFlag{Name: "retention-dir"},
+			&cli.IntFlag{Name: "retention"},
 			&cli.IntFlag{Name: "head-size"},
 			&cli.IntFlag{Name: "tail-size"},
 			&cli.StringFlag{Name: "storage"},
@@ -166,11 +171,12 @@ func daemonAction(_ context.Context, cmd *cli.Command) error {
 		return err
 	}
 	cfg := daemon.Config{
-		ID:           cmd.String("id"),
-		Command:      command,
-		Metadata:     metadata,
-		SocketPath:   cmd.String("socket"),
-		RetentionDir: cmd.String("retention-dir"),
+		ID:             cmd.String("id"),
+		Command:        command,
+		Metadata:       metadata,
+		SocketPath:     cmd.String("socket"),
+		RetentionDir:   cmd.String("retention-dir"),
+		RetentionCount: cmd.Int("retention"),
 		Scrollback: scrollback.Config{
 			HeadSize:    cmd.Int("head-size"),
 			TailSize:    cmd.Int("tail-size"),
