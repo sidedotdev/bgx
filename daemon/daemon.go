@@ -27,6 +27,7 @@ import (
 	"github.com/creack/pty"
 
 	"github.com/sidedotdev/bgx/scrollback"
+	"github.com/sidedotdev/bgx/vt"
 )
 
 const (
@@ -66,6 +67,7 @@ type Config struct {
 type Session struct {
 	cfg   Config
 	store *scrollback.Store
+	term  *vt.Terminal
 
 	listener net.Listener
 	done     chan struct{} // closed when the command has exited and been reaped
@@ -104,12 +106,14 @@ func Serve(cfg Config) error {
 func (s *Session) run() error {
 	if err := s.listen(); err != nil {
 		s.store.Close()
+		s.term.Close()
 		return err
 	}
 	if err := s.start(); err != nil {
 		s.listener.Close()
 		os.Remove(s.cfg.SocketPath)
 		s.store.Close()
+		s.term.Close()
 		return err
 	}
 
@@ -145,6 +149,7 @@ func (s *Session) run() error {
 	waitConns(&s.conns, connDrainGrace)
 
 	s.store.Close()
+	s.term.Close()
 	return perr
 }
 
@@ -167,9 +172,15 @@ func newSession(cfg Config) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	term, err := vt.New(defaultCols, defaultRows)
+	if err != nil {
+		store.Close()
+		return nil, err
+	}
 	s := &Session{
 		cfg:     cfg,
 		store:   store,
+		term:    term,
 		done:    make(chan struct{}),
 		outDone: make(chan struct{}),
 	}
@@ -241,6 +252,7 @@ func (s *Session) pumpOutput() {
 		if n > 0 {
 			data := buf[:n]
 			s.store.Write(data)
+			s.term.Write(data)
 			if s.noClients() {
 				if resp := scanDeviceAttributes(data); len(resp) > 0 {
 					s.queueInput(resp)
@@ -433,6 +445,26 @@ func (s *Session) info() *Info {
 		info.DurationMS = time.Since(s.startedAt).Milliseconds()
 	}
 	return info
+}
+
+// snapshot renders the current visible terminal state as VT sequences a client
+// can replay to reproduce the screen before live output streaming begins.
+func (s *Session) snapshot() ([]byte, error) {
+	return s.term.DumpScreen()
+}
+
+// resize updates both the PTY window size and the emulated terminal so attach
+// clients see correctly reflowed output.
+func (s *Session) resize(cols, rows uint16) error {
+	s.mu.Lock()
+	ptmx := s.ptmx
+	s.mu.Unlock()
+	if ptmx != nil {
+		if err := pty.Setsize(ptmx, &pty.Winsize{Rows: rows, Cols: cols}); err != nil {
+			return err
+		}
+	}
+	return s.term.Resize(cols, rows)
 }
 
 // persist writes the ended session's record and retained history to the
