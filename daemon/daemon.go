@@ -9,6 +9,9 @@
 // but uses Go: writes to the PTY go through a capped queue so a non-reading
 // child never blocks the daemon, and DA queries are answered on the daemon side
 // when no client is attached so interactive programs don't hang.
+//
+// Portions of this package are ported from zmx
+// (https://github.com/neurosnap/zmx); see LICENSE-zmx for its license.
 package daemon
 
 import (

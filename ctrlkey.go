@@ -1,5 +1,8 @@
 package main
 
+// Portions of this file are ported from zmx
+// (https://github.com/neurosnap/zmx); see LICENSE-zmx for its license.
+
 // isCtrlBackslash reports whether buf encodes a ctrl+\ keypress, either as the
 // raw control byte 0x1C or as a Kitty keyboard protocol CSI u sequence. It is
 // the detach key for attach, ported from zmx's util.isCtrlBackslash.

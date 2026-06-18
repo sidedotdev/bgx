@@ -1,5 +1,8 @@
 package daemon
 
+// The tagged, length-prefixed frame protocol in this file is ported from zmx
+// (https://github.com/neurosnap/zmx); see LICENSE-zmx for its license.
+
 import (
 	"encoding/binary"
 	"fmt"

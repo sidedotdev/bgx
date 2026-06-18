@@ -6,6 +6,9 @@
 //
 // It wraps the cgo-backed go.mitchellh.com/libghostty bindings, which link the
 // native libghostty-vt-static library via pkg-config.
+//
+// DumpScreen ports the terminal-state serialization approach from zmx
+// (https://github.com/neurosnap/zmx); see LICENSE-zmx for its license.
 package vt
 
 import (

@@ -1,5 +1,9 @@
 package main
 
+// The interactive attach bridge (raw mode, ctrl+\ detach, resize forwarding) is
+// ported from zmx (https://github.com/neurosnap/zmx); see LICENSE-zmx for its
+// license.
+
 import (
 	"bufio"
 	"context"

@@ -1,5 +1,8 @@
 package daemon
 
+// The multi-client leader model and frame bridging in this file are ported from
+// zmx (https://github.com/neurosnap/zmx); see LICENSE-zmx for its license.
+
 import (
 	"encoding/json"
 	"io"

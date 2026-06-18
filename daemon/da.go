@@ -1,5 +1,8 @@
 package daemon
 
+// The Device Attributes handling in this file is ported from zmx
+// (https://github.com/neurosnap/zmx); see LICENSE-zmx for its license.
+
 import "bytes"
 
 // Device Attributes (DA) query/response sequences. When no client is attached,
