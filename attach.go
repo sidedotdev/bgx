@@ -123,16 +123,19 @@ func runAttach(conn net.Conn, r io.Reader) error {
 	stdinDone := make(chan struct{})
 	go func() {
 		defer close(stdinDone)
-		buf := make([]byte, 4096)
+		buf := make([]byte, 64<<10)
+		var scanner detachScanner
 		for {
 			n, err := os.Stdin.Read(buf)
 			if n > 0 {
-				data := buf[:n]
-				if isCtrlBackslash(data) {
-					_ = send(daemon.FrameDetach, nil)
-					return
+				forward, detach := scanner.feed(buf[:n])
+				if len(forward) > 0 {
+					if werr := send(daemon.FrameInput, forward); werr != nil {
+						return
+					}
 				}
-				if werr := send(daemon.FrameInput, data); werr != nil {
+				if detach {
+					_ = send(daemon.FrameDetach, nil)
 					return
 				}
 			}

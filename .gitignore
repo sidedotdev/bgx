@@ -1,4 +1,7 @@
 /.libghostty/
 
+# Compiled bgx binary.
+/bgx
+
 # Go test binaries produced by `go test -c`.
 *.test

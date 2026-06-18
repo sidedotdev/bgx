@@ -95,3 +95,72 @@ func parseDecimal(buf []byte, pos *int) (uint32, bool) {
 func isDigit(b byte) bool {
 	return b >= '0' && b <= '9'
 }
+
+// detachScanner buffers terminal input across reads so a ctrl+\ detach sequence
+// split across read boundaries is still recognized rather than forwarded to the
+// session. It holds back any trailing fragment that could still grow into a
+// ctrl+\ keypress until the following read resolves it.
+type detachScanner struct {
+	pending []byte
+}
+
+// feed appends p to the buffered input and returns the bytes that are safe to
+// forward to the session now, along with whether a complete ctrl+\ detach was
+// seen. When detach is true no further input should be forwarded.
+func (d *detachScanner) feed(p []byte) (forward []byte, detach bool) {
+	d.pending = append(d.pending, p...)
+	if isCtrlBackslash(d.pending) {
+		d.pending = d.pending[:0]
+		return nil, true
+	}
+	hold := ctrlBackslashSuffixLen(d.pending)
+	cut := len(d.pending) - hold
+	forward = append([]byte(nil), d.pending[:cut]...)
+	d.pending = append(d.pending[:0], d.pending[cut:]...)
+	return forward, false
+}
+
+// ctrlBackslashSuffixLen reports how many trailing bytes of buf could be the
+// start of a ctrl+\ Kitty CSI-u sequence whose remaining bytes have not yet
+// arrived. Such a fragment is held back so a detach key split across reads is
+// still detected once the rest arrives.
+func ctrlBackslashSuffixLen(buf []byte) int {
+	for i := len(buf) - 1; i >= 0; i-- {
+		if buf[i] != 0x1b {
+			continue
+		}
+		if ctrlBackslashPrefix(buf[i:]) {
+			return len(buf) - i
+		}
+		return 0
+	}
+	return 0
+}
+
+// ctrlBackslashPrefix reports whether s, which begins with ESC, is an incomplete
+// prefix that could still grow into a ctrl+\ keypress (CSI key-code 92 with the
+// ctrl modifier). A lone ESC is treated as a real Escape key rather than held so
+// interactive use is unaffected.
+func ctrlBackslashPrefix(s []byte) bool {
+	if len(s) < 2 || s[1] != '[' {
+		return false
+	}
+	rest := s[2:]
+	i := 0
+	for i < len(rest) && isDigit(rest[i]) {
+		i++
+	}
+	keyDigits := rest[:i]
+	if i == len(rest) {
+		return isPrefixOf(keyDigits, "92")
+	}
+	if string(keyDigits) != "92" {
+		return false
+	}
+	return rest[i] == ':' || rest[i] == ';'
+}
+
+// isPrefixOf reports whether b is a prefix of s.
+func isPrefixOf(b []byte, s string) bool {
+	return len(b) <= len(s) && string(b) == s[:len(b)]
+}

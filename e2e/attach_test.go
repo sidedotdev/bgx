@@ -40,7 +40,7 @@ func TestAttachStreamsAndDetaches(t *testing.T) {
 	readDone := make(chan struct{})
 	go func() {
 		defer close(readDone)
-		buf := make([]byte, 4096)
+		buf := make([]byte, 64<<10)
 		for {
 			n, rerr := ptmx.Read(buf)
 			if n > 0 {
@@ -131,7 +131,7 @@ func TestAttachResizePropagates(t *testing.T) {
 	readDone := make(chan struct{})
 	go func() {
 		defer close(readDone)
-		buf := make([]byte, 4096)
+		buf := make([]byte, 64<<10)
 		for {
 			n, rerr := ptmx.Read(buf)
 			if n > 0 {
@@ -191,4 +191,63 @@ func TestAttachResizePropagates(t *testing.T) {
 	_ = cmd.Wait()
 
 	bgxIn(t, dir, "kill", "rsz")
+}
+
+// TestAttachDetachesOnSplitCtrlBackslash drives the attach client under a pty
+// and writes the Kitty-encoded ctrl+\ detach sequence ("\x1b[92;5u") split
+// across two writes. Neither half is a complete detach sequence on its own, so a
+// per-chunk check would forward both as input and never detach; the buffering
+// scanner must still recognize the reassembled sequence and detach.
+func TestAttachDetachesOnSplitCtrlBackslash(t *testing.T) {
+	dir := runDir(t)
+
+	if res := bgxIn(t, dir, "run", "split", "cat"); res.exitCode != 0 {
+		t.Fatalf("run exit = %d, stderr=%q", res.exitCode, res.stderr)
+	}
+
+	cmd := exec.Command(binPath, "attach", "split")
+	cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+dir, "TMPDIR="+dir)
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		t.Fatalf("pty start: %v", err)
+	}
+	defer ptmx.Close()
+
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		buf := make([]byte, 64<<10)
+		for {
+			if _, rerr := ptmx.Read(buf); rerr != nil {
+				return
+			}
+		}
+	}()
+
+	// Let the client enter raw mode and replay its snapshot before detaching.
+	time.Sleep(300 * time.Millisecond)
+
+	if _, err := ptmx.Write([]byte("\x1b[92")); err != nil {
+		t.Fatalf("write first half: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if _, err := ptmx.Write([]byte(";5u")); err != nil {
+		t.Fatalf("write second half: %v", err)
+	}
+
+	select {
+	case <-readDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("attach client did not detach on split ctrl+backslash")
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("attach client wait: %v", err)
+	}
+
+	info := decodeJSON(t, bgxIn(t, dir, "info", "split").stdout)
+	if info["running"] != true {
+		t.Fatalf("session not running after detach: %v", info)
+	}
+
+	bgxIn(t, dir, "kill", "split")
 }

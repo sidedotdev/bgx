@@ -5,7 +5,8 @@
 // record plus the retained history to the retention directory, removes the
 // socket, and returns.
 //
-// The design mirrors zmx's daemon-per-session model (see .tmp/zmx/src/main.zig)
+// The design mirrors zmx's daemon-per-session model (see
+// https://github.com/neurosnap/zmx/blob/9889a13d62c3ef2d412cab7cf63683a1bb2d7013/src/main.zig)
 // but uses Go: writes to the PTY go through a capped queue so a non-reading
 // child never blocks the daemon, and DA queries are answered on the daemon side
 // when no client is attached so interactive programs don't hang.
@@ -258,7 +259,7 @@ func (s *Session) reap() {
 // that all output has been captured.
 func (s *Session) pumpOutput() {
 	defer close(s.outDone)
-	buf := make([]byte, 32<<10)
+	buf := make([]byte, 64<<10)
 	for {
 		n, err := s.ptmx.Read(buf)
 		if n > 0 {

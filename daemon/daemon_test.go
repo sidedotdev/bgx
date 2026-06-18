@@ -64,7 +64,10 @@ func waitForSocket(t *testing.T, path string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); err == nil {
+		// A successful dial (not merely the file existing) confirms the listener
+		// is accepting, avoiding a transient connection-refused race at startup.
+		if conn, err := net.Dial("unix", path); err == nil {
+			conn.Close()
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
