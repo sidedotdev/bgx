@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/sidedotdev/bgx/daemon"
@@ -74,9 +75,18 @@ func runAttach(conn net.Conn, r io.Reader) error {
 	}
 
 	os.Stdout.WriteString("\x1b[2J\x1b[H")
-	// A full terminal reset on detach clears any session state the replay left
-	// on the local screen.
-	defer os.Stdout.WriteString("\x1bc")
+	var detached, sessionEnded atomic.Bool
+	// The exit reset depends on the cause: a ctrl+\ detach does a full terminal
+	// reset to clear the session state the replay left on the local screen,
+	// while a session end resets only the cursor so the final rendered output
+	// stays visible. A plain connection error falls back to a full reset.
+	defer func() {
+		if sessionEnded.Load() && !detached.Load() {
+			os.Stdout.WriteString("\x1b[?25h\x1b[0m")
+			return
+		}
+		os.Stdout.WriteString("\x1bc")
+	}()
 
 	var writeMu sync.Mutex
 	send := func(tag daemon.FrameTag, payload []byte) error {
@@ -112,10 +122,13 @@ func runAttach(conn net.Conn, r io.Reader) error {
 				return
 			}
 			switch tag {
-			case daemon.FrameOutput:
+			case daemon.FrameOutput, daemon.FrameResync:
 				os.Stdout.Write(payload)
 			case daemon.FrameResize:
 				sendSize()
+			case daemon.FrameEnded:
+				sessionEnded.Store(true)
+				return
 			}
 		}
 	}()
@@ -135,6 +148,7 @@ func runAttach(conn net.Conn, r io.Reader) error {
 					}
 				}
 				if detach {
+					detached.Store(true)
 					_ = send(daemon.FrameDetach, nil)
 					return
 				}

@@ -19,6 +19,13 @@ const (
 	FrameOutput FrameTag = 1 // daemon -> client: raw PTY output bytes
 	FrameResize FrameTag = 2 // window size; an empty body requests the peer's size
 	FrameDetach FrameTag = 3 // client -> daemon: detach without stopping the session
+	// FrameResync carries a fresh screen snapshot for a client that fell behind:
+	// its payload begins with a clear so the client repaints from the latest
+	// rendered terminal state, after which live streaming resumes.
+	FrameResync FrameTag = 4 // daemon -> client: clear and repaint with a fresh snapshot
+	// FrameEnded signals the session has ended; it carries no payload and the
+	// daemon closes the connection after sending it.
+	FrameEnded FrameTag = 5 // daemon -> client: session has ended
 )
 
 // maxFrameLen caps an inbound frame payload so a corrupt or hostile length
