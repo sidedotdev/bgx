@@ -1,6 +1,6 @@
 package daemon
 
-// The multi-client leader model and frame bridging in this file are ported from
+// The multi-client fanout and frame bridging in this file are ported from
 // zmx (https://github.com/neurosnap/zmx); see LICENSE-zmx for its license.
 
 import (
@@ -27,6 +27,11 @@ type attacher struct {
 	conn net.Conn
 	ch   chan outFrame
 	done chan struct{}
+
+	// rows and cols hold the client's last reported window size (0 = unknown),
+	// guarded by s.mu.
+	rows uint16
+	cols uint16
 }
 
 // serveAttach upgrades an accepted connection to the bidirectional frame
@@ -55,21 +60,15 @@ func (s *Session) serveAttach(conn net.Conn, r io.Reader) {
 	s.mu.Lock()
 	s.attachers[a] = struct{}{}
 	s.clientCount++
-	requestSize := s.leader == nil
-	if requestSize {
-		s.leader = a
-	}
 	s.mu.Unlock()
 	s.outMu.Unlock()
 
 	writerDone := make(chan struct{})
 	go s.attachWriter(a, snap, writerDone)
 
-	// Ask the new leader for its window size so the PTY and emulated terminal
-	// match the controlling client.
-	if requestSize {
-		s.enqueueFrame(a, outFrame{tag: FrameResize})
-	}
+	// Ask the client for its window size so the PTY tracks the smallest
+	// attached client.
+	s.enqueueFrame(a, outFrame{tag: FrameResize})
 
 	for {
 		tag, payload, err := ReadFrame(r)
@@ -92,21 +91,9 @@ func (s *Session) serveAttach(conn net.Conn, r io.Reader) {
 	s.mu.Lock()
 	delete(s.attachers, a)
 	s.clientCount--
-	var promoted *attacher
-	if s.leader == a {
-		s.leader = nil
-		// Promote a surviving client so the PTY keeps a size controller; its
-		// window size is requested below so the terminal reflows to match.
-		for other := range s.attachers {
-			s.leader = other
-			promoted = other
-			break
-		}
-	}
 	s.mu.Unlock()
-	if promoted != nil {
-		s.enqueueFrame(promoted, outFrame{tag: FrameResize})
-	}
+	// The smallest client may have left; grow the PTY back to the new minimum.
+	s.applyMinSize()
 	close(a.done)
 	<-writerDone
 }
@@ -161,62 +148,59 @@ func (s *Session) fanout(data []byte) {
 	}
 }
 
-// attachInput forwards a client's input to the PTY. Only the leader's input is
-// applied; a non-leader claims leadership the moment it sends real keystrokes,
-// at which point its window size is requested so the PTY tracks the new
-// controlling client.
+// attachInput forwards a client's input to the PTY. Every attached client's
+// input is applied so all concurrently connected clients drive the same
+// session.
 func (s *Session) attachInput(a *attacher, payload []byte) {
 	if len(payload) == 0 {
 		return
 	}
-	s.mu.Lock()
-	leader := s.leader == a
-	claimed := false
-	if !leader && (s.leader == nil || isUserInput(payload)) {
-		s.leader = a
-		leader = true
-		claimed = true
-	}
-	s.mu.Unlock()
-	if claimed {
-		s.enqueueFrame(a, outFrame{tag: FrameResize})
-	}
-	if leader {
-		s.queueInput(payload)
-	}
+	s.queueInput(payload)
 }
 
-// attachResize applies the leader's reported window size to both the PTY and
-// the emulated terminal so output reflows correctly for attached clients.
+// attachResize records the reporting client's window size and reflows the PTY
+// and emulated terminal to the smallest size across all attached clients so
+// every client sees output that fits its window.
 func (s *Session) attachResize(a *attacher, rp ResizePayload) {
-	s.mu.Lock()
-	if s.leader == nil {
-		s.leader = a
-	}
-	leader := s.leader == a
-	s.mu.Unlock()
-	if !leader || rp.Rows == 0 || rp.Cols == 0 {
+	if rp.Rows == 0 || rp.Cols == 0 {
 		return
 	}
-	_ = s.resize(rp.Cols, rp.Rows)
+	s.mu.Lock()
+	a.cols, a.rows = rp.Cols, rp.Rows
+	s.mu.Unlock()
+	s.applyMinSize()
 }
 
-// isUserInput reports whether payload looks like a deliberate keystroke (text or
-// an editing/navigation key) rather than an automatic terminal report such as a
-// mouse or focus event, mirroring zmx's leader-claim heuristic.
-func isUserInput(payload []byte) bool {
-	for i := 0; i < len(payload); i++ {
-		c := payload[i]
-		if c == 0x1b {
-			if i+2 < len(payload) && payload[i+1] == '[' {
-				switch payload[i+2] {
-				case 'M', '<', 'I', 'O':
-					return false
-				}
-			}
-			return true
-		}
-		return true
+// applyMinSize reflows the PTY and emulated terminal to the smallest cols and
+// rows reported across attached clients, taken independently per dimension. It
+// is a no-op until at least one client has reported its size.
+func (s *Session) applyMinSize() {
+	s.mu.Lock()
+	cols, rows, ok := s.minSize()
+	s.mu.Unlock()
+	if ok {
+		_ = s.resize(cols, rows)
 	}
-	return false
+}
+
+// minSize returns the smallest reported cols and rows independently across all
+// attached clients with a known window size. ok is false until at least one
+// client has reported a size. Callers must hold s.mu.
+func (s *Session) minSize() (cols, rows uint16, ok bool) {
+	for a := range s.attachers {
+		if a.cols == 0 || a.rows == 0 {
+			continue
+		}
+		if !ok {
+			cols, rows, ok = a.cols, a.rows, true
+			continue
+		}
+		if a.cols < cols {
+			cols = a.cols
+		}
+		if a.rows < rows {
+			rows = a.rows
+		}
+	}
+	return
 }

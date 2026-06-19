@@ -104,7 +104,6 @@ type Session struct {
 	inputBuf    []byte
 	conns       sync.WaitGroup
 	attachers   map[*attacher]struct{}
-	leader      *attacher
 }
 
 // Serve runs the configured command to completion: it creates the socket,
