@@ -81,10 +81,13 @@ But is customized for our needs:
    bloat in the case of very high throughput writes where compression isn't
    keeping up.
 1. All commands default to json output, other than history and attach.
-1. The daemon retains the history for the last N (configurable, defaults to 10)
-   sessions finished/killed per id namespace (namespace is the part of session
-   id before first "/"), writing these to a designated tmp directory by
+1. The daemon retains the history for the last 10 sessions (configurable) that
+   were finished/killed/current per id namespace (namespace is the part of
+   session id before first "/"), writing these to a designated tmp directory by
    default, or other configured storage.
+1. Only allows up to 3 (configurable) concurrent sessions that are still active
+   per id namespace. Fails with a clear error, listing all session info, when
+   attempting to run one over the threshold.
 1. Sessions can be tagged with an arbitrary map of metadata when created, which
    is included when sessions are listed, or used as a filter directly against
    top-level metadata keys in the list subcommand.
