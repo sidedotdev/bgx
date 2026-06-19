@@ -169,3 +169,33 @@ func TestRetentionPrunesOldestBeyondLimit(t *testing.T) {
 		}
 	}
 }
+
+// TestRetentionCountsActiveSessions proves that a currently-running session
+// occupies one of its namespace's retention slots, so fewer ended records are
+// kept than the configured limit while it stays alive.
+func TestRetentionCountsActiveSessions(t *testing.T) {
+	dir := runDir(t)
+
+	if res := bgxIn(t, dir, "run", "--retention", "2", "rp/live", "sleep", "30"); res.exitCode != 0 {
+		t.Fatalf("run rp/live exit code = %d, stderr=%q", res.exitCode, res.stderr)
+	}
+	t.Cleanup(func() { bgxIn(t, dir, "kill", "rp/live") })
+
+	// With one slot held by the live session, a limit of 2 leaves room for only
+	// a single ended record, so the older of two finished sessions is pruned.
+	for _, id := range []string{"rp/e1", "rp/e2"} {
+		if res := bgxIn(t, dir, "run", "--retention", "2", id, "echo", id); res.exitCode != 0 {
+			t.Fatalf("run %q exit code = %d, stderr=%q", id, res.exitCode, res.stderr)
+		}
+		waitEnded(t, dir, id)
+		// Space out end times so pruning's newest-first ordering is unambiguous.
+		time.Sleep(15 * time.Millisecond)
+	}
+
+	if m := decodeJSON(t, bgxIn(t, dir, "info", "rp/e1").stdout); m["exists"] != false {
+		t.Fatalf("rp/e1 should have been pruned by the active session; got %v", m)
+	}
+	if m := decodeJSON(t, bgxIn(t, dir, "info", "rp/e2").stdout); m["exists"] != true {
+		t.Fatalf("rp/e2 should be retained; got %v", m)
+	}
+}

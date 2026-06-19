@@ -506,7 +506,17 @@ func (s *Session) persist() error {
 	if err := writeRecord(s.cfg.RetentionDir, s.info(), s.store.Snapshot()); err != nil {
 		return err
 	}
-	return pruneRetention(s.cfg.RetentionDir, s.cfg.ID, s.cfg.RetentionCount)
+	keep := s.cfg.RetentionCount
+	if keep <= 0 {
+		keep = DefaultRetentionCount
+	}
+	// Sessions still running in this namespace count toward the retention
+	// budget, so reserve a slot for each; the just-ended record is always kept.
+	keep -= activeNamespaceSessions(filepath.Dir(s.cfg.SocketPath), s.cfg.ID)
+	if keep < 1 {
+		keep = 1
+	}
+	return pruneRetention(s.cfg.RetentionDir, s.cfg.ID, keep)
 }
 
 // conventionalExitCode maps a command's wait error to an exit code, using the

@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 )
@@ -181,5 +184,73 @@ func TestDuplicateIDRequiresOverwrite(t *testing.T) {
 	started := decodeJSON(t, overwrite.stdout)
 	if started["id"] != "dup" {
 		t.Fatalf("overwrite run id = %v, want dup", started["id"])
+	}
+}
+
+func TestRunEnforcesNamespaceConcurrencyLimit(t *testing.T) {
+	dir := runDir(t)
+
+	for _, id := range []string{"ns/a", "ns/b"} {
+		id := id
+		res := bgxIn(t, dir, "run", "--concurrency", "2", id, "sleep", "30")
+		if res.exitCode != 0 {
+			t.Fatalf("run %s exit code = %d, stderr=%q", id, res.exitCode, res.stderr)
+		}
+		t.Cleanup(func() { bgxIn(t, dir, "kill", id) })
+	}
+
+	over := bgxIn(t, dir, "run", "--concurrency", "2", "ns/c", "sleep", "30")
+	if over.exitCode == 0 {
+		t.Cleanup(func() { bgxIn(t, dir, "kill", "ns/c") })
+		t.Fatalf("run over limit succeeded, want failure; stdout=%q", over.stdout)
+	}
+	m := decodeJSON(t, over.stdout)
+	if _, ok := m["error"].(string); !ok {
+		t.Fatalf("over-limit run output = %q, want JSON error", over.stdout)
+	}
+	sessions, ok := m["sessions"].([]any)
+	if !ok || len(sessions) != 2 {
+		t.Fatalf("over-limit sessions = %v, want 2 active sessions", m["sessions"])
+	}
+
+	// A different namespace has its own independent budget.
+	other := bgxIn(t, dir, "run", "--concurrency", "2", "other/a", "sleep", "30")
+	if other.exitCode != 0 {
+		t.Fatalf("run in separate namespace exit code = %d, stderr=%q", other.exitCode, other.stderr)
+	}
+	t.Cleanup(func() { bgxIn(t, dir, "kill", "other/a") })
+}
+
+// TestRunConcurrentInvocationsRespectLimit launches many simultaneous runs in
+// one namespace and proves the cap is enforced atomically: exactly the limit
+// number win, so a check-then-spawn race cannot exceed it.
+func TestRunConcurrentInvocationsRespectLimit(t *testing.T) {
+	dir := runDir(t)
+
+	const limit = 1
+	const attempts = 6
+	results := make([]result, attempts)
+	var wg sync.WaitGroup
+	for i := 0; i < attempts; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			id := fmt.Sprintf("race/s%d", i)
+			results[i] = bgxIn(t, dir, "run", "--concurrency", strconv.Itoa(limit), id, "sleep", "30")
+		}()
+	}
+	wg.Wait()
+
+	succeeded := 0
+	for i := range results {
+		if results[i].exitCode == 0 {
+			succeeded++
+			id := fmt.Sprintf("race/s%d", i)
+			t.Cleanup(func() { bgxIn(t, dir, "kill", id) })
+		}
+	}
+	if succeeded != limit {
+		t.Fatalf("concurrent runs succeeded = %d, want %d (cap must be enforced atomically)", succeeded, limit)
 	}
 }

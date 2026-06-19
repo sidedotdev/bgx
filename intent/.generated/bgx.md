@@ -30,7 +30,11 @@ intent_links:
       - main.go:socketDir
       - main.go:retentionDir
       - client.go:socketPath
+      - client.go:runningInNamespace
+      - client.go:failConcurrencyLimit
       - daemon/retention.go:Namespace
+      - daemon/retention.go:activeNamespaceSessions
+      - daemon/daemon.go:persist
 ---
 
 # bgx (generated)
@@ -92,3 +96,16 @@ configured via `run` flags (with env fallbacks) and forwarded to the daemon.
 Ended-session records and histories are persisted under a tmp retention dir,
 grouped by id namespace (the substring before the first "/"; slashless ids share
 one global namespace), keeping only the newest N (default 10) per namespace.
+Currently-running sessions count toward that N: when an ending session prunes
+its namespace, it reserves one slot for each live session sharing the namespace
+(discovered by scanning the socket dir), so finished/killed records plus active
+sessions together stay within the limit.
+
+`run` also enforces a per-namespace cap on concurrently active sessions
+(default 3, set via `--concurrency`/`BGX_CONCURRENCY`). The check and spawn are
+serialized under a per-namespace advisory file lock in the socket dir, so
+simultaneous `run` invocations cannot race past the cap. When a namespace is
+already at its limit, `run` fails with a JSON error that lists every active
+session so the caller can act on it, and does not spawn a daemon. Both the cap
+and the retention slot accounting count only sockets with a live listener,
+ignoring stale socket files left by crashed daemons.

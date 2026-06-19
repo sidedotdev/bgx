@@ -48,6 +48,7 @@ func newApp() *cli.Command {
 					&cli.StringFlag{Name: "storage"},
 					&cli.StringFlag{Name: "storage-path"},
 					&cli.IntFlag{Name: "retention", Sources: cli.EnvVars("BGX_RETENTION")},
+					&cli.IntFlag{Name: "concurrency", Value: defaultConcurrency, Sources: cli.EnvVars("BGX_CONCURRENCY")},
 				},
 				Action: runAction,
 			},

@@ -31,6 +31,10 @@ const maxSocketPathLen = 104
 // bind its socket (or, for a very short-lived command, to persist a record).
 const socketReadyTimeout = 5 * time.Second
 
+// defaultConcurrency caps how many sessions may be active at once within a
+// single id namespace unless overridden via the run --concurrency flag.
+const defaultConcurrency = 3
+
 // socketPath returns the unix domain socket path for a session id, encoding the
 // id into a single safe filename component.
 func socketPath(id string) string {
@@ -121,6 +125,25 @@ func runAction(_ context.Context, cmd *cli.Command) error {
 		}
 		os.Remove(daemon.RecordPath(retentionDir(), id))
 		os.Remove(daemon.HistoryPath(retentionDir(), id))
+	}
+
+	limit := cmd.Int("concurrency")
+	if limit <= 0 {
+		limit = defaultConcurrency
+	}
+	ns := daemon.Namespace(id)
+
+	// Serialize the concurrency check and spawn per namespace so simultaneous
+	// run invocations can't both observe room and race past the cap. The lock is
+	// held until the new session's socket is live and therefore countable.
+	unlock, err := lockNamespace(ns)
+	if err != nil {
+		return failJSON("run: %v", err)
+	}
+	defer unlock()
+
+	if active := runningInNamespace(ns); len(active) >= limit {
+		return failConcurrencyLimit(ns, limit, active)
 	}
 
 	if err := spawnDaemon(id, command, metadata, cmd); err != nil {
@@ -320,6 +343,60 @@ func listAction(_ context.Context, cmd *cli.Command) error {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return printJSON(os.Stdout, out)
+}
+
+// lockNamespace takes an exclusive advisory lock that serializes run's
+// concurrency check and daemon spawn within a single id namespace, so
+// concurrent run invocations cannot race past the configured cap. The returned
+// release function must be called once the new session is observable. The lock
+// is also released automatically if the process exits while holding it.
+func lockNamespace(ns string) (func(), error) {
+	dir := socketDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(dir, url.QueryEscape(ns)+".nslock")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return func() {
+		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		f.Close()
+	}, nil
+}
+
+// runningInNamespace returns the live sessions whose ids share the given
+// namespace (the portion before the first "/"), used to enforce the per-
+// namespace concurrency limit.
+func runningInNamespace(ns string) []*daemon.Info {
+	var out []*daemon.Info
+	for _, info := range listRunning() {
+		if daemon.Namespace(info.ID) == ns {
+			out = append(out, info)
+		}
+	}
+	return out
+}
+
+// failConcurrencyLimit reports that a namespace is already at its active-session
+// limit, including every offending session so callers can act on the listing.
+func failConcurrencyLimit(ns string, limit int, sessions []*daemon.Info) error {
+	label := fmt.Sprintf("namespace %q", ns)
+	if ns == "" {
+		label = "the global namespace"
+	}
+	_ = printJSON(os.Stdout, map[string]any{
+		"error": fmt.Sprintf("run: %s already has %d active session(s); concurrency limit is %d",
+			label, len(sessions), limit),
+		"sessions": sessions,
+	})
+	os.Exit(1)
+	return nil
 }
 
 // listRunning queries every live session socket, cleaning up sockets that no

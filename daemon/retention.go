@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -109,6 +110,44 @@ func pruneRetention(retentionDir, id string, keep int) error {
 		os.Remove(filepath.Join(dir, r.base+".history"))
 	}
 	return nil
+}
+
+// activeNamespaceSessions counts live session sockets sharing id's namespace,
+// excluding id itself. Currently-running sessions count toward the per-namespace
+// retention budget alongside ended records, so each occupies a retained slot.
+// Stale sockets left by crashed daemons have no listener and are not counted.
+func activeNamespaceSessions(socketDir, id string) int {
+	entries, err := os.ReadDir(socketDir)
+	if err != nil {
+		return 0
+	}
+	ns := Namespace(id)
+	count := 0
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".sock") {
+			continue
+		}
+		other, err := url.QueryUnescape(strings.TrimSuffix(name, ".sock"))
+		if err != nil || other == id || Namespace(other) != ns {
+			continue
+		}
+		if socketAlive(filepath.Join(socketDir, name)) {
+			count++
+		}
+	}
+	return count
+}
+
+// socketAlive reports whether a unix socket has a live listener, distinguishing
+// running sessions from stale socket files left behind by crashed daemons.
+func socketAlive(path string) bool {
+	conn, err := net.DialTimeout("unix", path, 200*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
 }
 
 // recordEndedAt reads a persisted record's end time, falling back to the file's
