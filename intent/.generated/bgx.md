@@ -31,6 +31,15 @@ intent_links:
       - main.go:retentionDir
       - client.go:socketPath
       - daemon/retention.go:Namespace
+  - intent: "#boundary-alignment-and-truncation-demarcation"
+    code:
+      - vtscan/vtscan.go
+      - scrollback/store.go
+      - scrollback/store.go:Snapshot
+      - scrollback/backend.go:Config
+      - daemon/daemon.go:feedTerm
+      - daemon/daemon.go:pumpOutput
+      - daemon/attach.go:serveAttach
 ---
 
 # bgx (generated)
@@ -92,3 +101,27 @@ configured via `run` flags (with env fallbacks) and forwarded to the daemon.
 Ended-session records and histories are persisted under a tmp retention dir,
 grouped by id namespace (the substring before the first "/"; slashless ids share
 one global namespace), keeping only the newest N (default 10) per namespace.
+
+## Boundary alignment and truncation demarcation
+
+A dependency-free `vtscan` package implements a minimal hand-rolled VT500 parser
+plus UTF-8 tracking, exposing whether the parser sits at ground state on a rune
+boundary and a `SafeCut` that finds the largest safe offset at or before a
+target size. Both the scrollback store and the daemon import it (it stays
+cgo-free unlike `vt`).
+
+The scrollback store compresses head and tail through one chunk pipeline and
+uses `vtscan` to nudge chunk-flush points, the head/tail split, and tail trims
+onto ground/rune boundaries, so configured sizes (head, tail, and the
+`FallbackBytes` no-compress threshold on `scrollback.Config`) are approximate.
+`Snapshot` decompresses head then tail, and when the middle was discarded it
+inserts a demarcation block (empty line, marker, `[...] truncated <humanized>`,
+marker, empty line) and a RIS reset preamble right before the tail so the tail
+renders on a clean state. A session whose head retains everything is byte-for-byte
+unchanged, keeping the attach torture test valid.
+
+The daemon feeds `s.term` only up to the latest ground/rune boundary
+(`feedTerm`), buffering the trailing partial sequence for the next read while
+still storing and fanning out every raw byte, so `serveAttach`'s `DumpScreen`
+snapshot is always taken at a clean boundary that tiles with the streamed
+remainder.
