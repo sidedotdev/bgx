@@ -17,8 +17,15 @@ const (
 // Config configures a Store's retention sizes and chunk storage. The zero value
 // uses the default head/tail sizes and in-memory storage.
 type Config struct {
-	HeadSize    int
-	TailSize    int
+	HeadSize int
+	TailSize int
+
+	// CompressionBacklogSize bounds the unprocessed write backlog: once the
+	// buffered-but-uncompressed bytes exceed it, chunks are stored uncompressed
+	// so the drain goroutine keeps up under high-throughput writes. Non-positive
+	// uses the package default.
+	CompressionBacklogSize int
+
 	Storage     StorageKind
 	StoragePath string // disk only; empty selects an auto-created tmp directory
 }
@@ -40,7 +47,7 @@ func New(cfg Config) (*Store, error) {
 	default:
 		return nil, fmt.Errorf("scrollback: unknown storage kind %q", cfg.Storage)
 	}
-	return newStoreBackend(cfg.HeadSize, cfg.TailSize, defaultChunkSize, defaultFallbackBytes, b), nil
+	return newStoreBackend(cfg.HeadSize, cfg.TailSize, defaultChunkSize, cfg.CompressionBacklogSize, b), nil
 }
 
 // chunkHandle is an opaque reference a backend returns for a stored chunk.

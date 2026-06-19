@@ -4,7 +4,11 @@ intent_links:
     code:
       - main.go
       - daemon/daemon.go
+      - daemon/attach.go:serveAttach
       - scrollback/store.go
+      - scrollback/store.go:Snapshot
+      - scrollback/backend.go:Config
+      - vtscan/vtscan.go
       - vt/vt.go
       - client.go
   - intent: "#commands"
@@ -30,9 +34,12 @@ intent_links:
     code:
       - main.go:daemonCommand
       - daemon/daemon.go:Serve
+      - daemon/daemon.go:pumpOutput
       - daemon/protocol.go
       - daemon/frame.go
       - scrollback/backend.go
+      - scrollback/store.go:Snapshot
+      - vtscan/vtscan.go
       - vt/vt.go
 ---
 

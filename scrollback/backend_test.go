@@ -59,8 +59,8 @@ func TestDiskBackendPersistsAndEvictsChunks(t *testing.T) {
 	if _, err := s.Write(pattern(total)); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if got := s.Snapshot(); len(got) != head+tail {
-		t.Fatalf("snapshot len = %d, want %d", len(got), head+tail)
+	if got := s.Snapshot(); len(got) < head+tail || len(got) > head+tail+2*chunk {
+		t.Fatalf("snapshot len = %d, want within [%d, %d]", len(got), head+tail, head+tail+2*chunk)
 	}
 
 	files, err := filepath.Glob(filepath.Join(db.dir, "chunk-*"))
@@ -69,7 +69,7 @@ func TestDiskBackendPersistsAndEvictsChunks(t *testing.T) {
 	}
 
 	s.mu.Lock()
-	retained := len(s.tailChunks)
+	retained := len(s.headChunks) + len(s.tailChunks)
 	s.mu.Unlock()
 
 	if len(files) != retained {

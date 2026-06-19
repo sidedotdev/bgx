@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -90,8 +91,18 @@ func TestHistoryKeepsHeadAndTailDiscardsMiddle(t *testing.T) {
 		t.Fatalf("info output_bytes = %v, want %d", m["output_bytes"], len(output))
 	}
 
+	// The discarded middle is demarcated by a blank line, a marker rule, a
+	// "[...] truncated <N>" notice, another rule and a blank line, with a full
+	// terminal reset (RIS) immediately before the retained tail so it renders
+	// on a clean state.
+	const rule = "────────────────────────────────────────"
 	h := bgxIn(t, dir, "history", "trunc")
-	want := output[:8] + output[len(output)-8:]
+	discarded := len(output) - 16
+	want := output[:8] +
+		"\r\n\r\n" + rule + "\r\n" +
+		fmt.Sprintf("[...] truncated %dB", discarded) +
+		"\r\n" + rule + "\r\n\r\n" +
+		"\x1bc" + output[len(output)-8:]
 	if h.stdout != want {
 		t.Fatalf("history = %q, want %q", h.stdout, want)
 	}
