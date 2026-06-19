@@ -8,6 +8,7 @@
 package scrollback
 
 import (
+	"fmt"
 	"sync"
 	"unicode/utf8"
 
@@ -181,8 +182,15 @@ func (s *Store) Snapshot() []byte {
 		tail = tail[boundaryTrim(seed, tail, len(tail)-s.tailSize):]
 	}
 
+	// Anything written but not retained in either the head or the (trimmed) tail
+	// is the discarded middle; surface its size so a history dump reads honestly.
+	discarded := s.totalBytes - int64(len(head)) - int64(len(tail))
+
 	out := make([]byte, 0, len(head)+len(tail))
 	out = append(out, head...)
+	if discarded > 0 {
+		out = appendTruncation(out, discarded)
+	}
 	out = append(out, tail...)
 	return out
 }
@@ -385,4 +393,47 @@ func boundaryTrim(seed vtscan.Scanner, buf []byte, want int) int {
 		return off
 	}
 	return 0
+}
+
+// resetPreamble is a full terminal reset (RIS). It is emitted immediately
+// before the retained tail so the tail renders on a clean state rather than
+// inheriting whatever mode the discarded middle left the terminal in.
+const resetPreamble = "\x1bc"
+
+// truncationRule is the marker line that brackets the truncation notice in a
+// history dump.
+const truncationRule = "────────────────────────────────────────"
+
+// appendTruncation writes the demarcation for a discarded middle of n bytes: an
+// empty line, a marker line, the truncation notice, a marker line and an empty
+// line, followed by a terminal reset so the tail that comes next renders
+// cleanly.
+func appendTruncation(dst []byte, n int64) []byte {
+	// Lead with two breaks so the empty line is genuinely blank even when the
+	// retained head does not end on a newline: the first break ends the head's
+	// final line, the second leaves a blank line before the marker.
+	dst = append(dst, "\r\n\r\n"...)
+	dst = append(dst, truncationRule...)
+	dst = append(dst, "\r\n[...] truncated "...)
+	dst = append(dst, humanizeBytes(n)...)
+	dst = append(dst, "\r\n"...)
+	dst = append(dst, truncationRule...)
+	dst = append(dst, "\r\n\r\n"...)
+	dst = append(dst, resetPreamble...)
+	return dst
+}
+
+// humanizeBytes formats n as a compact, human-readable size such as "1.5MB",
+// using binary (1024-based) units.
+func humanizeBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%dB", n)
+	}
+	div, exp := int64(unit), 0
+	for v := n / unit; v >= unit; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%cB", float64(n)/float64(div), "KMGTPE"[exp])
 }

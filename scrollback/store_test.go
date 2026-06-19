@@ -90,20 +90,32 @@ func TestLargeStreamKeepsHeadAndTailDiscardsMiddle(t *testing.T) {
 
 	got := s.Snapshot()
 
-	// Sizes are approximate: cuts snap to ground/rune boundaries near the
-	// configured limits rather than landing on exact byte counts.
-	if len(got) < head+tail || len(got) > head+tail+2*chunk {
-		t.Fatalf("snapshot len = %d, want within [%d, %d]", len(got), head+tail, head+tail+2*chunk)
-	}
 	if int64(len(got)) >= s.TotalBytes() {
 		t.Fatalf("snapshot len = %d did not discard the middle of %d bytes", len(got), s.TotalBytes())
 	}
 
-	hlen := commonPrefixLen(got, data)
+	// The discarded middle is replaced by a demarcation block plus a reset
+	// preamble, so the tail follows the reset rather than the head directly.
+	reset := []byte(resetPreamble)
+	resetAt := bytes.Index(got, reset)
+	if resetAt < 0 {
+		t.Fatal("snapshot is missing the reset preamble before the tail")
+	}
+	tailGot := got[resetAt+len(reset):]
+
+	s.mu.Lock()
+	for s.busy {
+		s.cond.Wait()
+	}
+	hlen := s.headBytes
+	s.mu.Unlock()
+
 	if hlen < head {
 		t.Fatalf("retained head len = %d, want >= %d", hlen, head)
 	}
-	tailGot := got[hlen:]
+	if !bytes.Equal(got[:hlen], data[:hlen]) {
+		t.Fatal("retained head is not a verbatim prefix of the stream")
+	}
 	if !bytes.Equal(tailGot, data[total-len(tailGot):]) {
 		t.Fatal("tail is not a contiguous suffix of the stream")
 	}
@@ -115,6 +127,10 @@ func TestLargeStreamKeepsHeadAndTailDiscardsMiddle(t *testing.T) {
 	}
 	if !atGround(data[:total-len(tailGot)]) {
 		t.Fatal("retained tail does not begin on a ground/rune boundary")
+	}
+	discarded := int64(total - hlen - len(tailGot))
+	if !bytes.Equal(got[hlen:resetAt+len(reset)], appendTruncation(nil, discarded)) {
+		t.Fatalf("demarcation = %q, want %q", got[hlen:resetAt+len(reset)], appendTruncation(nil, discarded))
 	}
 	if total := s.TotalBytes(); total != int64(len(data)) {
 		t.Fatalf("total bytes = %d, want %d", total, len(data))
@@ -138,12 +154,23 @@ func TestTailNotChunkAligned(t *testing.T) {
 
 	got := s.Snapshot()
 
-	if len(got) < head+tail || len(got) > head+tail+2*chunk {
-		t.Fatalf("snapshot len = %d, want within [%d, %d]", len(got), head+tail, head+tail+2*chunk)
+	reset := []byte(resetPreamble)
+	resetAt := bytes.Index(got, reset)
+	if resetAt < 0 {
+		t.Fatal("snapshot is missing the reset preamble before the tail")
 	}
+	tailGot := got[resetAt+len(reset):]
 
-	hlen := commonPrefixLen(got, data)
-	tailGot := got[hlen:]
+	s.mu.Lock()
+	for s.busy {
+		s.cond.Wait()
+	}
+	hlen := s.headBytes
+	s.mu.Unlock()
+
+	if !bytes.Equal(got[:hlen], data[:hlen]) {
+		t.Fatal("retained head is not a verbatim prefix of the stream")
+	}
 	if !bytes.Equal(tailGot, data[total-len(tailGot):]) {
 		t.Fatal("tail is not a contiguous suffix of the stream")
 	}
@@ -155,6 +182,90 @@ func TestTailNotChunkAligned(t *testing.T) {
 	}
 	if !atGround(data[:total-len(tailGot)]) {
 		t.Fatal("retained tail does not begin on a ground/rune boundary")
+	}
+}
+
+func TestHumanizeBytes(t *testing.T) {
+	cases := []struct {
+		n    int64
+		want string
+	}{
+		{0, "0B"},
+		{512, "512B"},
+		{1023, "1023B"},
+		{1024, "1.0KB"},
+		{1536, "1.5KB"},
+		{1024 * 1024, "1.0MB"},
+		{1536 * 1024, "1.5MB"},
+		{1024 * 1024 * 1024, "1.0GB"},
+	}
+	for _, c := range cases {
+		if got := humanizeBytes(c.n); got != c.want {
+			t.Errorf("humanizeBytes(%d) = %q, want %q", c.n, got, c.want)
+		}
+	}
+}
+
+func TestSnapshotDemarcatesDiscardedMiddle(t *testing.T) {
+	const (
+		head  = 2000
+		tail  = 4000
+		chunk = 1000
+		total = 40000
+	)
+	s := newStore(head, tail, chunk, 1<<20)
+	defer s.Close()
+	if _, err := s.Write(pattern(total)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got := s.Snapshot()
+
+	reset := []byte(resetPreamble)
+	resetAt := bytes.Index(got, reset)
+	if resetAt < 0 {
+		t.Fatal("snapshot is missing the reset preamble before the tail")
+	}
+	if !bytes.Contains(got[:resetAt], []byte("[...] truncated ")) {
+		t.Fatal("snapshot is missing the truncation notice")
+	}
+
+	s.mu.Lock()
+	for s.busy {
+		s.cond.Wait()
+	}
+	headLen := s.headBytes
+	s.mu.Unlock()
+
+	tailGot := got[resetAt+len(reset):]
+	discarded := int64(total - headLen - len(tailGot))
+	if discarded <= 0 {
+		t.Fatalf("expected a discarded middle, got %d", discarded)
+	}
+
+	// Assert the exact required shape: a blank line, a marker line, the notice,
+	// a marker line, a blank line, then the reset preamble.
+	wantBlock := "\r\n\r\n" + truncationRule + "\r\n" +
+		"[...] truncated " + humanizeBytes(discarded) + "\r\n" +
+		truncationRule + "\r\n\r\n" + resetPreamble
+	if gotBlock := string(got[headLen : resetAt+len(reset)]); gotBlock != wantBlock {
+		t.Fatalf("demarcation = %q, want %q", gotBlock, wantBlock)
+	}
+}
+
+func TestSnapshotNoDemarcationWhenNothingDiscarded(t *testing.T) {
+	s := newStore(1<<20, 1<<20, 1000, 1<<20)
+	defer s.Close()
+
+	data := pattern(50000)
+	if _, err := s.Write(data); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got := s.Snapshot()
+	if !bytes.Equal(got, data) {
+		t.Fatal("snapshot altered output when nothing was discarded")
+	}
+	if bytes.Contains(got, []byte("truncated")) || bytes.Contains(got, []byte(resetPreamble)) {
+		t.Fatal("emitted demarcation despite retaining the entire stream")
 	}
 }
 
@@ -245,8 +356,20 @@ func TestBoundariesNeverSplitRunesOrEscapes(t *testing.T) {
 		t.Fatalf("snapshot len = %d did not discard the middle of %d bytes", len(got), len(data))
 	}
 
-	hlen := commonPrefixLen(got, data)
-	tailGot := got[hlen:]
+	reset := []byte(resetPreamble)
+	resetAt := bytes.Index(got, reset)
+	if resetAt < 0 {
+		t.Fatal("snapshot is missing the reset preamble before the tail")
+	}
+	tailGot := got[resetAt+len(reset):]
+
+	s.mu.Lock()
+	for s.busy {
+		s.cond.Wait()
+	}
+	hlen := s.headBytes
+	s.mu.Unlock()
+
 	if !bytes.Equal(tailGot, data[len(data)-len(tailGot):]) {
 		t.Fatal("tail is not a contiguous suffix of the stream")
 	}
@@ -422,7 +545,12 @@ func TestStatefulEscapeSequenceSpansChunksAndEvictions(t *testing.T) {
 	if !atGround(got[:headLen]) {
 		t.Fatal("retained head ends inside an escape sequence")
 	}
-	tailGot := got[headLen:]
+	reset := []byte(resetPreamble)
+	resetAt := bytes.Index(got, reset)
+	if resetAt < 0 {
+		t.Fatal("snapshot is missing the reset preamble before the tail")
+	}
+	tailGot := got[resetAt+len(reset):]
 	if !bytes.Equal(tailGot, data[len(data)-len(tailGot):]) {
 		t.Fatal("retained tail is not a contiguous suffix of the stream")
 	}
@@ -463,7 +591,12 @@ func TestApproximateSizesStayWithinOneBoundaryGap(t *testing.T) {
 	if headLen < head || headLen > head+maxGap {
 		t.Fatalf("retained head len = %d, want within [%d, %d]", headLen, head, head+maxGap)
 	}
-	tailGot := got[headLen:]
+	reset := []byte(resetPreamble)
+	resetAt := bytes.Index(got, reset)
+	if resetAt < 0 {
+		t.Fatal("snapshot is missing the reset preamble before the tail")
+	}
+	tailGot := got[resetAt+len(reset):]
 	if len(tailGot) < tail || len(tailGot) > tail+maxGap {
 		t.Fatalf("retained tail len = %d, want within [%d, %d]", len(tailGot), tail, tail+maxGap)
 	}
