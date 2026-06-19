@@ -69,7 +69,7 @@ func TestDiskBackendPersistsAndEvictsChunks(t *testing.T) {
 	}
 
 	s.mu.Lock()
-	retained := len(s.tailChunks)
+	retained := len(s.headChunks) + len(s.tailChunks)
 	s.mu.Unlock()
 
 	if len(files) != retained {

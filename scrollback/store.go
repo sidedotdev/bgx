@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	// DefaultHeadSize is the number of leading bytes kept verbatim.
+	// DefaultHeadSize is the number of leading bytes retained.
 	DefaultHeadSize = 1 << 20 // 1MB
 	// DefaultTailSize is the number of trailing bytes retained.
 	DefaultTailSize = 9 << 20 // 9MB
@@ -35,7 +35,7 @@ type chunk struct {
 	compressed bool
 }
 
-// Store accumulates a byte stream, retaining a verbatim head and a bounded,
+// Store accumulates a byte stream, retaining a compressed head and a bounded,
 // compressed tail. It is safe for concurrent use; Write never blocks on
 // compression.
 type Store struct {
@@ -54,9 +54,10 @@ type Store struct {
 	done chan struct{}
 
 	pending    []byte
-	head       []byte
+	chunkBuf   []byte
+	headChunks []chunk
+	headBytes  int
 	tailChunks []chunk
-	tailBuf    []byte
 	tailBytes  int
 	totalBytes int64
 	closed     bool
@@ -154,31 +155,19 @@ func (s *Store) Snapshot() []byte {
 		s.cond.Wait()
 	}
 
+	head := s.decodeChunks(s.headChunks)
+
 	// Eviction works at chunk granularity, so the retained chunks may hold more
 	// than tailSize bytes. Trim the assembled tail to the exact last tailSize
 	// bytes so the result is independent of the compression chunk size.
-	tail := make([]byte, 0, s.tailBytes)
-	for _, c := range s.tailChunks {
-		data, err := s.backend.get(c.handle)
-		if err != nil {
-			s.err = err
-			continue
-		}
-		if c.compressed {
-			if d, derr := s.decoder.DecodeAll(data, nil); derr == nil {
-				tail = append(tail, d...)
-			}
-		} else {
-			tail = append(tail, data...)
-		}
-	}
-	tail = append(tail, s.tailBuf...)
+	tail := s.decodeChunks(s.tailChunks)
+	tail = append(tail, s.chunkBuf...)
 	if len(tail) > s.tailSize {
 		tail = tail[len(tail)-s.tailSize:]
 	}
 
-	out := make([]byte, 0, len(s.head)+len(tail))
-	out = append(out, s.head...)
+	out := make([]byte, 0, len(head)+len(tail))
+	out = append(out, head...)
 	out = append(out, tail...)
 	return out
 }
@@ -202,8 +191,8 @@ func (s *Store) Close() error {
 	return nil
 }
 
-// drain is the background goroutine that moves pending bytes into the head and
-// the compressed tail chunks.
+// drain is the background goroutine that moves pending bytes into the
+// compressed head and tail chunks.
 func (s *Store) drain() {
 	defer close(s.done)
 	for {
@@ -226,40 +215,37 @@ func (s *Store) drain() {
 	}
 }
 
-// process distributes buf across the head and tail, compressing full chunks.
-// It is called with the lock held and may briefly release it while compressing.
+// process accumulates buf into the current chunk, flushing each full chunk to
+// the compressed head or tail. While the head is still filling, the chunk is
+// capped at the headSize boundary so the head is sealed (and retained) even
+// when it is smaller than a full chunk. It is called with the lock held and may
+// briefly release it while compressing.
 func (s *Store) process(buf []byte) {
-	if len(s.head) < s.headSize {
-		n := s.headSize - len(s.head)
-		if n > len(buf) {
-			n = len(buf)
-		}
-		s.head = append(s.head, buf[:n]...)
-		buf = buf[n:]
-	}
-
 	for len(buf) > 0 {
-		n := s.chunkSize - len(s.tailBuf)
+		target := s.chunkSize
+		if r := s.headSize - s.headBytes; r > 0 && r < target {
+			target = r
+		}
+		n := target - len(s.chunkBuf)
 		if n > len(buf) {
 			n = len(buf)
 		}
-		s.tailBuf = append(s.tailBuf, buf[:n]...)
-		s.tailBytes += n
+		s.chunkBuf = append(s.chunkBuf, buf[:n]...)
 		buf = buf[n:]
-		s.evict()
-		if len(s.tailBuf) >= s.chunkSize {
+		if len(s.chunkBuf) >= target {
 			s.flushChunk(len(buf) + len(s.pending))
 		}
 	}
 }
 
-// flushChunk finalizes the current partial chunk. When the still-unprocessed
-// backlog exceeds the fallback threshold the chunk is stored uncompressed so
-// the drain goroutine can keep up; otherwise it is zstd-compressed. Both the
-// compression and the backend write happen with the lock released so neither
-// blocks concurrent writers.
+// flushChunk compresses and stores the current full chunk, then routes it to
+// the head until headSize is retained and to the tail thereafter. When the
+// still-unprocessed backlog exceeds the fallback threshold the chunk is stored
+// uncompressed so the drain goroutine can keep up; otherwise it is
+// zstd-compressed. Both the compression and the backend write happen with the
+// lock released so neither blocks concurrent writers.
 func (s *Store) flushChunk(backlog int) {
-	raw := s.tailBuf
+	raw := s.chunkBuf
 	compressed := backlog <= s.fallbackBytes
 
 	s.mu.Unlock()
@@ -270,13 +256,19 @@ func (s *Store) flushChunk(backlog int) {
 	h, err := s.backend.put(data)
 	s.mu.Lock()
 
-	s.tailBuf = make([]byte, 0, s.chunkSize)
+	s.chunkBuf = make([]byte, 0, s.chunkSize)
 	if err != nil {
 		s.err = err
-		s.tailBytes -= len(raw)
 		return
 	}
-	s.tailChunks = append(s.tailChunks, chunk{handle: h, rawLen: len(raw), compressed: compressed})
+	c := chunk{handle: h, rawLen: len(raw), compressed: compressed}
+	if s.headBytes < s.headSize {
+		s.headChunks = append(s.headChunks, c)
+		s.headBytes += c.rawLen
+		return
+	}
+	s.tailChunks = append(s.tailChunks, c)
+	s.tailBytes += c.rawLen
 	s.evict()
 }
 
@@ -290,4 +282,25 @@ func (s *Store) evict() {
 		}
 		s.tailChunks = s.tailChunks[1:]
 	}
+}
+
+// decodeChunks returns the concatenated raw bytes of chunks, decompressing any
+// stored compressed. Backend read errors are recorded and the chunk skipped.
+func (s *Store) decodeChunks(chunks []chunk) []byte {
+	var out []byte
+	for _, c := range chunks {
+		data, err := s.backend.get(c.handle)
+		if err != nil {
+			s.err = err
+			continue
+		}
+		if c.compressed {
+			if d, derr := s.decoder.DecodeAll(data, nil); derr == nil {
+				out = append(out, d...)
+			}
+		} else {
+			out = append(out, data...)
+		}
+	}
+	return out
 }
