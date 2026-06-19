@@ -52,7 +52,7 @@ sharing with it the following features:
 
 1. separate client and daemon(s)
 1. daemon per session
-1. allow multiple clients to attach to the same session
+1. allow multiple clients to concurrently attach to the same session
 1. overlapping [sub-commands](#commands), though with a slightly different flavor
 1. uses the same libghostty-vt approach for rendering latest terminal state
 
@@ -127,7 +127,7 @@ But is customized for our needs:
      buffers) result in the attached client gracefully skipping forward by
      re-attaching at a later point, getting the latest rendered terminal state
      and resuming from that point.
-   - Writes input to session PTY
+   - Writes all concurrently connecting clients' input to the session PTY
    - Detach with ctrl+\
    - Closes automatically when session ends, resetting the cursor but not the
      entire terminal state
