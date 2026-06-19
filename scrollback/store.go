@@ -9,8 +9,11 @@ package scrollback
 
 import (
 	"sync"
+	"unicode/utf8"
 
 	"github.com/klauspost/compress/zstd"
+
+	"github.com/sidedotdev/bgx/vtscan"
 )
 
 const (
@@ -33,6 +36,10 @@ type chunk struct {
 	handle     chunkHandle
 	rawLen     int
 	compressed bool
+	// start is the VT/UTF-8 parser state at the chunk's first byte, letting a
+	// retained chunk be re-scanned from the true stream state after the
+	// preceding chunks (and the discarded middle) have been evicted.
+	start vtscan.Scanner
 }
 
 // Store accumulates a byte stream, retaining a compressed head and a bounded,
@@ -53,8 +60,11 @@ type Store struct {
 	cond *sync.Cond
 	done chan struct{}
 
-	pending    []byte
-	chunkBuf   []byte
+	pending  []byte
+	chunkBuf []byte
+	// scanner holds the parser state at chunkBuf's first byte so flush cuts are
+	// evaluated against the true stream state, not a reset scanner.
+	scanner    vtscan.Scanner
 	headChunks []chunk
 	headBytes  int
 	tailChunks []chunk
@@ -158,12 +168,17 @@ func (s *Store) Snapshot() []byte {
 	head := s.decodeChunks(s.headChunks)
 
 	// Eviction works at chunk granularity, so the retained chunks may hold more
-	// than tailSize bytes. Trim the assembled tail to the exact last tailSize
-	// bytes so the result is independent of the compression chunk size.
+	// than tailSize bytes. Trim the assembled tail to roughly the last tailSize
+	// bytes, snapping the front cut to a ground/rune boundary so the retained
+	// tail never begins with a partial escape sequence or split rune.
 	tail := s.decodeChunks(s.tailChunks)
 	tail = append(tail, s.chunkBuf...)
 	if len(tail) > s.tailSize {
-		tail = tail[len(tail)-s.tailSize:]
+		seed := s.scanner
+		if len(s.tailChunks) > 0 {
+			seed = s.tailChunks[0].start
+		}
+		tail = tail[boundaryTrim(seed, tail, len(tail)-s.tailSize):]
 	}
 
 	out := make([]byte, 0, len(head)+len(tail))
@@ -221,31 +236,72 @@ func (s *Store) drain() {
 // when it is smaller than a full chunk. It is called with the lock held and may
 // briefly release it while compressing.
 func (s *Store) process(buf []byte) {
-	for len(buf) > 0 {
+	s.chunkBuf = append(s.chunkBuf, buf...)
+	for {
 		target := s.chunkSize
 		if r := s.headSize - s.headBytes; r > 0 && r < target {
 			target = r
 		}
-		n := target - len(s.chunkBuf)
-		if n > len(buf) {
-			n = len(buf)
+		if len(s.chunkBuf) < target {
+			return
 		}
-		s.chunkBuf = append(s.chunkBuf, buf[:n]...)
-		buf = buf[n:]
-		if len(s.chunkBuf) >= target {
-			s.flushChunk(len(buf) + len(s.pending))
+		cut := s.boundaryCut(target)
+		if cut <= 0 {
+			// No ground/rune boundary is available yet; keep accumulating
+			// rather than splitting an escape sequence or a multi-byte rune.
+			return
 		}
+		backlog := len(s.chunkBuf) - cut + len(s.pending)
+		s.flushChunk(cut, backlog)
 	}
 }
 
-// flushChunk compresses and stores the current full chunk, then routes it to
-// the head until headSize is retained and to the tail thereafter. When the
-// still-unprocessed backlog exceeds the fallback threshold the chunk is stored
-// uncompressed so the drain goroutine can keep up; otherwise it is
-// zstd-compressed. Both the compression and the backend write happen with the
-// lock released so neither blocks concurrent writers.
-func (s *Store) flushChunk(backlog int) {
-	raw := s.chunkBuf
+// boundaryCut returns an offset into chunkBuf at which the VT parser is back at
+// the ground state and on a UTF-8 rune boundary, chosen near target so chunk
+// sizes stay approximate without ever splitting an escape sequence or a rune.
+// chunkBuf always begins at such a boundary (every flush ends on one), so a
+// fresh scanner reflects its starting state. It prefers the largest boundary
+// not exceeding target; when none exists below target (e.g. target lands inside
+// a sequence) it takes the next boundary just beyond target so progress is
+// still made. It returns -1 when no boundary exists yet, leaving chunkBuf to
+// accumulate the unterminated sequence.
+func (s *Store) boundaryCut(target int) int {
+	sc := s.scanner
+	best := -1
+	for off := 1; off <= len(s.chunkBuf); off++ {
+		sc.Advance(s.chunkBuf[off-1 : off])
+		if off < len(s.chunkBuf) && !utf8.RuneStart(s.chunkBuf[off]) {
+			continue
+		}
+		if !sc.AtGround() {
+			continue
+		}
+		if off <= target {
+			best = off
+			continue
+		}
+		if best > 0 {
+			return best
+		}
+		return off
+	}
+	return best
+}
+
+// flushChunk compresses and stores chunkBuf[:cut], then routes it to the head
+// until headSize is retained and to the tail thereafter. cut is a ground/rune
+// boundary so the stored chunk never splits an escape sequence or rune; the
+// trailing bytes are retained for the next chunk. When the still-unprocessed
+// backlog exceeds the fallback threshold the chunk is stored uncompressed so
+// the drain goroutine can keep up; otherwise it is zstd-compressed. Both the
+// compression and the backend write happen with the lock released so neither
+// blocks concurrent writers.
+func (s *Store) flushChunk(cut, backlog int) {
+	consumed := len(s.chunkBuf)
+	raw := s.chunkBuf[:cut]
+	// rest must be a fresh allocation: the memory backend retains raw's backing
+	// array for uncompressed chunks, so it must not be reused for chunkBuf.
+	rest := append(make([]byte, 0, s.chunkSize), s.chunkBuf[cut:consumed]...)
 	compressed := backlog <= s.fallbackBytes
 
 	s.mu.Unlock()
@@ -256,12 +312,21 @@ func (s *Store) flushChunk(backlog int) {
 	h, err := s.backend.put(data)
 	s.mu.Lock()
 
-	s.chunkBuf = make([]byte, 0, s.chunkSize)
+	// Preserve any bytes appended to chunkBuf while the lock was released during
+	// compression/backend put rather than dropping them with the stale slice.
+	if len(s.chunkBuf) > consumed {
+		rest = append(rest, s.chunkBuf[consumed:]...)
+	}
+	s.chunkBuf = rest
+	// Advance the persistent scanner over the flushed bytes so it (and the next
+	// chunk's recorded start state) reflect the parser state at chunkBuf's front.
+	chunkStart := s.scanner
+	s.scanner.Advance(raw)
 	if err != nil {
 		s.err = err
 		return
 	}
-	c := chunk{handle: h, rawLen: len(raw), compressed: compressed}
+	c := chunk{handle: h, rawLen: cut, compressed: compressed, start: chunkStart}
 	if s.headBytes < s.headSize {
 		s.headChunks = append(s.headChunks, c)
 		s.headBytes += c.rawLen
@@ -303,4 +368,21 @@ func (s *Store) decodeChunks(chunks []chunk) []byte {
 		}
 	}
 	return out
+}
+
+// boundaryTrim returns an offset near want at which the VT parser is at the
+// ground state and on a UTF-8 rune boundary, so trimming buf[:offset] never
+// leaves a partial escape sequence or split rune at the head of the retained
+// slice. seed is the parser state at buf's first byte (the recorded start state
+// of the oldest retained tail chunk), so cuts are evaluated against the true
+// stream state after eviction rather than a reset scanner. It prefers the
+// largest boundary not exceeding want, falling back to the next beyond want.
+func boundaryTrim(seed vtscan.Scanner, buf []byte, want int) int {
+	if off := seed.SafeCut(buf, want); off >= 0 {
+		return off
+	}
+	if off := seed.SafeCut(buf, len(buf)); off >= 0 {
+		return off
+	}
+	return 0
 }
