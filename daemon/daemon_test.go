@@ -14,6 +14,7 @@ import (
 
 	"github.com/sidedotdev/bgx/scrollback"
 	"github.com/sidedotdev/bgx/vt"
+	"github.com/sidedotdev/bgx/vtscan"
 )
 
 // startSession runs Serve for cmd in the background and returns the socket and
@@ -285,11 +286,13 @@ func TestAttachSnapshotStreamCoversEntireOutput(t *testing.T) {
 	// A deliberately slow shell loop dribbles distinct, sequentially numbered
 	// lines, keeping output in flight throughout every client's attach handoff
 	// while the low instantaneous rate keeps each client's bounded backlog from
-	// overflowing (which would disconnect it — a separate concern). The final
-	// sentinel line marks end of output, and the trailing sleep keeps the
-	// session alive so clients drain in full before it is killed (output dropped
-	// during session shutdown is likewise a separate concern).
-	shCmd := fmt.Sprintf(`i=0; while [ $i -lt %d ]; do printf 'ln%%05d\n' "$i"; i=$((i+1)); done; printf '%s\n'; sleep 30`, lines, sentinel)
+	// overflowing (which would disconnect it — a separate concern). Each line is
+	// wrapped in SGR color escapes so a read (and thus a snapshot) can land
+	// inside an escape sequence, exercising the ground/rune-boundary alignment.
+	// The final sentinel line marks end of output, and the trailing sleep keeps
+	// the session alive so clients drain in full before it is killed (output
+	// dropped during session shutdown is likewise a separate concern).
+	shCmd := fmt.Sprintf(`i=0; while [ $i -lt %d ]; do printf '\033[3%%dmln%%05d\033[0m\n' "$((i%%8))" "$i"; i=$((i+1)); done; printf '%s\n'; sleep 30`, lines, sentinel)
 	s, socketPath, _, errCh := startTortureSession(t, "torture", []string{"sh", "-c", shCmd})
 
 	type capture struct {
@@ -423,6 +426,11 @@ func assertAttachTiles(t *testing.T, idx int, full, snapshot, stream []byte) {
 		return
 	}
 	prefix := full[:len(full)-len(stream)]
+	var sc vtscan.Scanner
+	sc.Advance(prefix)
+	if !sc.AtGround() {
+		t.Errorf("client %d: the %dB pre-attach prefix does not end at a VT ground/rune boundary; the snapshot was not taken at the most recent safe state", idx, len(prefix))
+	}
 	want := renderTorture(t, prefix)
 	if !bytes.Equal(want, snapshot) {
 		t.Errorf("client %d: snapshot does not equal the rendering of the %dB pre-attach prefix (snapshot=%dB, want=%dB); output was lost or duplicated during the attach handoff", idx, len(prefix), len(snapshot), len(want))

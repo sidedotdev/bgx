@@ -33,6 +33,7 @@ import (
 
 	"github.com/sidedotdev/bgx/scrollback"
 	"github.com/sidedotdev/bgx/vt"
+	"github.com/sidedotdev/bgx/vtscan"
 )
 
 const (
@@ -82,6 +83,12 @@ type Session struct {
 	// outMu serializes terminal writes with output fanout and attach snapshots
 	// so a newly attached client neither misses nor duplicates output.
 	outMu sync.Mutex
+
+	// outScan tracks the VT ground/rune boundary of the bytes already rendered
+	// and fanned out; outPending holds the trailing partial sequence until a
+	// later read completes it. Both are owned solely by the output pump.
+	outScan    vtscan.Scanner
+	outPending []byte
 
 	mu          sync.Mutex
 	cond        *sync.Cond
@@ -265,10 +272,7 @@ func (s *Session) pumpOutput() {
 		if n > 0 {
 			data := buf[:n]
 			s.store.Write(data)
-			s.outMu.Lock()
-			s.term.Write(data)
-			s.fanout(data)
-			s.outMu.Unlock()
+			s.feedTerm(data, false)
 			if s.noClients() {
 				if resp := scanDeviceAttributes(data); len(resp) > 0 {
 					s.queueInput(resp)
@@ -276,9 +280,33 @@ func (s *Session) pumpOutput() {
 			}
 		}
 		if err != nil {
+			s.feedTerm(nil, true)
 			return
 		}
 	}
+}
+
+// feedTerm renders output and fans it out to attachers, advancing only to the
+// latest VT ground and UTF-8 rune boundary so the attach snapshot
+// (s.term.DumpScreen) and the raw bytes streamed afterwards always tile
+// cleanly. The trailing partial sequence is buffered until a later read
+// completes it; flush forces any remainder through once the PTY reaches EOF.
+func (s *Session) feedTerm(data []byte, flush bool) {
+	s.outPending = append(s.outPending, data...)
+	cut := len(s.outPending)
+	if !flush {
+		cut = s.outScan.SafeCut(s.outPending, len(s.outPending))
+	}
+	if cut <= 0 {
+		return
+	}
+	safe := s.outPending[:cut]
+	s.outScan.Advance(safe)
+	s.outMu.Lock()
+	s.term.Write(safe)
+	s.fanout(safe)
+	s.outMu.Unlock()
+	s.outPending = append(s.outPending[:0], s.outPending[cut:]...)
 }
 
 // pumpInput flushes queued bytes to the PTY. Running in its own goroutine means
