@@ -128,6 +128,9 @@ But is customized for our needs:
      re-attaching at a later point, getting the latest rendered terminal state
      and resuming from that point.
    - Writes all concurrently connecting clients' input to the session PTY
+   - Client resizes are forwarded to the session PTY. When there are multiple,
+     the smallest column size, and smallest row size across all clients (even if
+     different clients) is forwarded, ensuring non-broken rendering
    - Detach with ctrl+\
    - Closes automatically when session ends, resetting the cursor but not the
      entire terminal state
