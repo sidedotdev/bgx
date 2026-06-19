@@ -113,14 +113,24 @@ But is customized for our needs:
 - wait <id>
    - Wait for session to finish. Returns exit code.
 - kill <id>
+   - Syncronously kills the session
+   - Ensures all output up to the point the session is killed is retained
+   - Any still-attached clients will also receive all such output before closing
+     automatically
 - history <id>
 - attach <id>
    - Session must exist and be running
    - Attaches to session, outputs "current" rendered terminal state
      (specifically: the most recent available ground and rune boundary state)
      and continues to update it by streaming raw output since that state
+   - Clients that cannot keep up with consuming the stream (resulting in full
+     buffers) result in the attached client gracefully skipping forward by
+     re-attaching at a later point, getting the latest rendered terminal state
+     and resuming from that point.
    - Writes input to session PTY
    - Detach with ctrl+\
+   - Closes automatically when session ends, resetting the cursor but not the
+     entire terminal state
 - send <id> <text...>
    - Send raw input to session PTY without attaching
 - list|ls
