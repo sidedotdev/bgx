@@ -4,10 +4,17 @@
 // points that neither split an escape sequence nor split a multi-byte rune.
 //
 // The escape/CSI/DCS/OSC/string transitions follow Paul Williams' VT500 parser
-// model (https://vt100.net/emu/dec_ansi_parser). UTF-8 runes are tracked
-// separately because that model predates UTF-8; 8-bit C1 controls are
-// intentionally not recognized so their bytes can instead be interpreted as
-// UTF-8 lead/continuation bytes.
+// model (https://vt100.net/emu/dec_ansi_parser). Within a string state (OSC/DCS/
+// SOS/PM/APC), ESC leaves the string and begins a fresh escape sequence (the
+// proper 7-bit String Terminator being ESC \), while CAN/SUB abort back to
+// ground; the scanner returns to ground once that following sequence dispatches.
+// UTF-8 runes are tracked separately because the model predates UTF-8; the
+// single-byte 8-bit C1 controls (0x80-0x9F, including the 8-bit forms of
+// ST/CSI/OSC and NEL 0x85) are intentionally not recognized so their bytes can
+// instead be interpreted as UTF-8 lead/continuation bytes. That is the correct
+// interpretation for UTF-8 terminals, which emit the 7-bit ESC forms of these
+// controls and reuse the 0x80-0x9F range exclusively for rune continuation
+// bytes.
 package vtscan
 
 import "unicode/utf8"

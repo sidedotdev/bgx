@@ -37,10 +37,6 @@ type chunk struct {
 	handle     chunkHandle
 	rawLen     int
 	compressed bool
-	// start is the VT/UTF-8 parser state at the chunk's first byte, letting a
-	// retained chunk be re-scanned from the true stream state after the
-	// preceding chunks (and the discarded middle) have been evicted.
-	start vtscan.Scanner
 }
 
 // Store accumulates a byte stream, retaining a compressed head and a bounded,
@@ -61,11 +57,8 @@ type Store struct {
 	cond *sync.Cond
 	done chan struct{}
 
-	pending  []byte
-	chunkBuf []byte
-	// scanner holds the parser state at chunkBuf's first byte so flush cuts are
-	// evaluated against the true stream state, not a reset scanner.
-	scanner    vtscan.Scanner
+	pending    []byte
+	chunkBuf   []byte
 	headChunks []chunk
 	headBytes  int
 	tailChunks []chunk
@@ -175,11 +168,7 @@ func (s *Store) Snapshot() []byte {
 	tail := s.decodeChunks(s.tailChunks)
 	tail = append(tail, s.chunkBuf...)
 	if len(tail) > s.tailSize {
-		seed := s.scanner
-		if len(s.tailChunks) > 0 {
-			seed = s.tailChunks[0].start
-		}
-		tail = tail[boundaryTrim(seed, tail, len(tail)-s.tailSize):]
+		tail = tail[boundaryTrim(tail, len(tail)-s.tailSize):]
 	}
 
 	// Anything written but not retained in either the head or the (trimmed) tail
@@ -274,7 +263,7 @@ func (s *Store) process(buf []byte) {
 // still made. It returns -1 when no boundary exists yet, leaving chunkBuf to
 // accumulate the unterminated sequence.
 func (s *Store) boundaryCut(target int) int {
-	sc := s.scanner
+	var sc vtscan.Scanner
 	best := -1
 	for off := 1; off <= len(s.chunkBuf); off++ {
 		sc.Advance(s.chunkBuf[off-1 : off])
@@ -326,15 +315,11 @@ func (s *Store) flushChunk(cut, backlog int) {
 		rest = append(rest, s.chunkBuf[consumed:]...)
 	}
 	s.chunkBuf = rest
-	// Advance the persistent scanner over the flushed bytes so it (and the next
-	// chunk's recorded start state) reflect the parser state at chunkBuf's front.
-	chunkStart := s.scanner
-	s.scanner.Advance(raw)
 	if err != nil {
 		s.err = err
 		return
 	}
-	c := chunk{handle: h, rawLen: cut, compressed: compressed, start: chunkStart}
+	c := chunk{handle: h, rawLen: cut, compressed: compressed}
 	if s.headBytes < s.headSize {
 		s.headChunks = append(s.headChunks, c)
 		s.headBytes += c.rawLen
@@ -381,15 +366,15 @@ func (s *Store) decodeChunks(chunks []chunk) []byte {
 // boundaryTrim returns an offset near want at which the VT parser is at the
 // ground state and on a UTF-8 rune boundary, so trimming buf[:offset] never
 // leaves a partial escape sequence or split rune at the head of the retained
-// slice. seed is the parser state at buf's first byte (the recorded start state
-// of the oldest retained tail chunk), so cuts are evaluated against the true
-// stream state after eviction rather than a reset scanner. It prefers the
+// slice. buf always begins at a ground/rune boundary (every retained chunk is
+// cut on one), so a fresh scanner reflects its starting state. It prefers the
 // largest boundary not exceeding want, falling back to the next beyond want.
-func boundaryTrim(seed vtscan.Scanner, buf []byte, want int) int {
-	if off := seed.SafeCut(buf, want); off >= 0 {
+func boundaryTrim(buf []byte, want int) int {
+	var sc vtscan.Scanner
+	if off := sc.SafeCut(buf, want); off >= 0 {
 		return off
 	}
-	if off := seed.SafeCut(buf, len(buf)); off >= 0 {
+	if off := sc.SafeCut(buf, len(buf)); off >= 0 {
 		return off
 	}
 	return 0

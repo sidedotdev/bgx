@@ -113,7 +113,8 @@ cgo-free unlike `vt`).
 The scrollback store compresses head and tail through one chunk pipeline and
 uses `vtscan` to nudge chunk-flush points, the head/tail split, and tail trims
 onto ground/rune boundaries, so configured sizes (head, tail, and the
-`FallbackBytes` no-compress threshold on `scrollback.Config`) are approximate.
+`CompressionBacklogSize` no-compress threshold on `scrollback.Config`) are
+approximate.
 `Snapshot` decompresses head then tail, and when the middle was discarded it
 inserts a demarcation block (empty line, marker, `[...] truncated <humanized>`,
 marker, empty line) and a RIS reset preamble right before the tail so the tail
