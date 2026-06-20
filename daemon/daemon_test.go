@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 	"testing"
 	"time"
@@ -286,7 +287,9 @@ func TestAttachSnapshotStreamCoversEntireOutput(t *testing.T) {
 	// A deliberately slow shell loop dribbles distinct, sequentially numbered
 	// lines, keeping output in flight throughout every client's attach handoff
 	// while the low instantaneous rate keeps each client's bounded backlog from
-	// overflowing (which would disconnect it — a separate concern). Each line is
+	// overflowing, which would trigger a skip-forward re-sync and break the
+	// single-snapshot tiling invariant asserted here (re-sync is exercised by
+	// TestSlowClientResyncsInsteadOfDisconnect). Each line is
 	// wrapped in SGR color escapes so a read (and thus a snapshot) can land
 	// inside an escape sequence, exercising the ground/rune-boundary alignment.
 	// The final sentinel line marks end of output, and the trailing sleep keeps
@@ -389,6 +392,8 @@ func attachCapture(t *testing.T, socketPath string, sentinel []byte) (snapshot, 
 	}
 
 	gotSnapshot := false
+	scanned := 0
+	sentinelAt := -1
 	for {
 		tag, payload, err := ReadFrame(br)
 		if err != nil {
@@ -407,8 +412,21 @@ func attachCapture(t *testing.T, socketPath string, sentinel []byte) (snapshot, 
 		}
 		stream = append(stream, payload...)
 		// The sentinel is the last line, so once it and a following newline are
-		// present the stream has captured everything up to end of output.
-		if i := bytes.Index(stream, sentinel); i >= 0 && bytes.IndexByte(stream[i+len(sentinel):], '\n') >= 0 {
+		// present the stream has captured everything up to end of output. Scan
+		// only newly arrived bytes (with a small overlap so a sentinel split
+		// across frames is still found) to keep this capture O(n) and able to
+		// keep pace with a fast flood without falling behind.
+		if sentinelAt < 0 {
+			from := scanned - len(sentinel)
+			if from < 0 {
+				from = 0
+			}
+			if i := bytes.Index(stream[from:], sentinel); i >= 0 {
+				sentinelAt = from + i
+			}
+			scanned = len(stream)
+		}
+		if sentinelAt >= 0 && bytes.IndexByte(stream[sentinelAt+len(sentinel):], '\n') >= 0 {
 			break
 		}
 	}
@@ -455,4 +473,151 @@ func renderTorture(t *testing.T, data []byte) []byte {
 		t.Fatalf("dump screen: %v", err)
 	}
 	return dump
+}
+
+// TestSlowClientResyncsInsteadOfDisconnect verifies that a client whose bounded
+// backlog overflows is re-synced with a fresh snapshot of the latest rendered
+// terminal state rather than disconnected, while a concurrently attached client
+// that keeps up still receives a clean, single-snapshot stream that tiles the
+// full output exactly.
+func TestSlowClientResyncsInsteadOfDisconnect(t *testing.T) {
+	const (
+		burst    = 20000
+		tail     = 60
+		sentinel = "ZZSENTINELZZ"
+	)
+	sentinelBytes := []byte(sentinel)
+	// A tight sh loop emits one wide line per write; the fast Go output pump
+	// reads each individually, so the frame count tracks the line count and a
+	// stalled client accumulates far more than attachQueue frames during its
+	// stall, forcing a skip-forward re-sync. After the burst, a slow trickle
+	// keeps output flowing well past the last re-sync so the re-synced client
+	// resumes streaming through to the sentinel (proving clean resume tiling);
+	// the trailing sleep keeps the session alive until both clients drain.
+	shCmd := fmt.Sprintf(`i=0; while [ $i -lt %d ]; do printf 'b%%06d-paddingpaddingpaddingpaddingpaddingpaddingpaddingpad\n' "$i"; i=$((i+1)); done; i=0; while [ $i -lt %d ]; do printf 't%%06d-tail\n' "$i"; sleep 0.02; i=$((i+1)); done; printf '%s\n'; sleep 30`, burst, tail, sentinel)
+	s, socketPath, _, errCh := startTortureSession(t, "slowresync", []string{"sh", "-c", shCmd})
+
+	var (
+		fastSnapshot []byte
+		fastStream   []byte
+		fastDone     = make(chan struct{})
+	)
+	go func() {
+		defer close(fastDone)
+		fastSnapshot, fastStream = attachCapture(t, socketPath, sentinelBytes)
+	}()
+
+	resyncSnap, postStream, streamedOut, resynced, open := slowAttachCapture(t, socketPath, sentinelBytes)
+	<-fastDone
+
+	// The history op waits for all buffered writes, so it is the exact ground
+	// truth; capture it while the session is still alive, then stop it.
+	resp := roundTrip(t, socketPath, Request{Op: "history"})
+	if !resp.OK {
+		t.Fatalf("history op failed: %q", resp.Error)
+	}
+	full := resp.History
+	s.kill()
+	<-errCh
+
+	if !open {
+		t.Fatalf("slow client was disconnected instead of re-synced")
+	}
+	if !resynced {
+		t.Fatalf("slow client never received a re-sync snapshot; its backlog never overflowed")
+	}
+	// The overflowed backlog must be skipped, not merely followed by a re-sync:
+	// the slow client should never receive most burst lines as streamed output
+	// (they are dropped and bridged by re-sync snapshots). Delivering the whole
+	// backlog before a redundant re-sync would surface nearly every burst line.
+	burstSeen := map[string]struct{}{}
+	for _, m := range regexp.MustCompile(`b\d{6}`).FindAll(streamedOut, -1) {
+		burstSeen[string(m)] = struct{}{}
+	}
+	if len(burstSeen) >= burst/2 {
+		t.Fatalf("slow client received %d of %d burst lines as streamed output; the overflowed backlog was delivered instead of being skipped forward via re-sync", len(burstSeen), burst)
+	}
+	clear := []byte("\x1b[2J\x1b[H")
+	if !bytes.HasPrefix(resyncSnap, clear) {
+		t.Fatalf("re-sync snapshot must begin with a screen clear so the client repaints from a blank screen")
+	}
+	// The latest re-sync snapshot (after its leading clear) plus the bytes
+	// streamed after it must tile the full output exactly: the post-re-sync
+	// stream is a clean suffix and the snapshot equals the rendering of the
+	// preceding prefix, proving the client resumes with no lost or duplicated
+	// bytes relative to the fresh snapshot.
+	assertAttachTiles(t, -2, full, resyncSnap[len(clear):], postStream)
+	if !bytes.Contains(postStream, sentinelBytes) {
+		t.Fatalf("slow client did not resume streaming through to the latest output after the re-sync")
+	}
+	assertAttachTiles(t, -1, full, fastSnapshot, fastStream)
+}
+
+// slowAttachCapture performs the attach handshake, then stalls long enough for
+// its backlog to overflow and afterwards reads one frame per tick — far slower
+// than the flood — so the backlog keeps overflowing and the daemon must skip
+// this client forward. It returns the latest re-sync snapshot, the raw stream
+// after that snapshot, all streamed output (every Output frame after the initial
+// snapshot, excluding re-sync snapshots), whether any re-sync arrived, and
+// whether the connection stayed open through to the sentinel (a disconnected
+// client surfaces as a read error before the sentinel).
+func slowAttachCapture(t *testing.T, socketPath string, sentinel []byte) (resyncSnap, postStream, streamedOut []byte, resynced, open bool) {
+	t.Helper()
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Errorf("dial: %v", err)
+		return nil, nil, nil, false, false
+	}
+	defer conn.Close()
+	br := bufio.NewReader(conn)
+	if err := json.NewEncoder(conn).Encode(Request{Op: "attach"}); err != nil {
+		t.Errorf("attach encode: %v", err)
+		return nil, nil, nil, false, false
+	}
+	line, err := br.ReadBytes('\n')
+	if err != nil {
+		t.Errorf("attach handshake: %v", err)
+		return nil, nil, nil, false, false
+	}
+	var resp Response
+	if err := json.Unmarshal(line, &resp); err != nil || !resp.OK {
+		t.Errorf("attach response: err=%v line=%q", err, line)
+		return nil, nil, nil, false, false
+	}
+
+	// Stall so the burst overruns the bounded backlog before reading anything.
+	time.Sleep(500 * time.Millisecond)
+	gotSnapshot := false
+	for {
+		tag, payload, err := ReadFrame(br)
+		if err != nil {
+			return resyncSnap, postStream, streamedOut, resynced, false
+		}
+		switch tag {
+		case FrameResync:
+			// A fresh snapshot supersedes everything streamed so far; only bytes
+			// received after the latest re-sync must tile from it.
+			resynced = true
+			resyncSnap = payload
+			postStream = postStream[:0]
+		case FrameOutput:
+			if !gotSnapshot {
+				// The first Output frame is the initial attach snapshot, not
+				// part of the streamed output.
+				gotSnapshot = true
+				break
+			}
+			streamedOut = append(streamedOut, payload...)
+			postStream = append(postStream, payload...)
+		}
+		// The sentinel is the last line; once it and a trailing newline have
+		// arrived after the latest re-sync, the post-re-sync stream covers
+		// everything up to end of output.
+		if i := bytes.Index(postStream, sentinel); i >= 0 && bytes.IndexByte(postStream[i+len(sentinel):], '\n') >= 0 {
+			_ = WriteFrame(conn, FrameDetach, nil)
+			return resyncSnap, postStream, streamedOut, resynced, true
+		}
+		// Read deliberately slower than the flood so the backlog keeps overflowing.
+		time.Sleep(time.Millisecond)
+	}
 }

@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"io"
 	"net"
+	"sync"
 )
 
 // attachQueue bounds the per-client output backlog. A client that can't keep up
-// is disconnected rather than stalling the PTY output pump or silently dropping
-// bytes mid-stream.
+// is re-synced with a fresh snapshot of the latest rendered terminal state
+// rather than disconnected, so a slow consumer never stalls the PTY output pump
+// nor silently drops bytes mid-stream.
 const attachQueue = 1024
 
 // outFrame is a frame queued for delivery to an attached client.
@@ -20,18 +22,34 @@ type outFrame struct {
 	payload []byte
 }
 
-// attacher is a single live attach connection. Frames destined for the client
-// flow through ch to a dedicated writer goroutine so the output pump never
-// blocks on a slow consumer.
+// attacher is a single live attach connection. A dedicated writer goroutine
+// drains buf so the output pump never blocks on a slow consumer; when buf
+// overflows the client is re-synced with a fresh snapshot instead of being
+// disconnected.
 type attacher struct {
 	conn net.Conn
-	ch   chan outFrame
-	done chan struct{}
+
+	// mu guards the outbound frame buffer and resync/close state. cond wakes the
+	// writer goroutine when new frames, a pending resync, or a close arrive.
+	mu     sync.Mutex
+	cond   *sync.Cond
+	buf    []outFrame
+	resync []byte // fresh snapshot pending after a backlog overflow (nil = none)
+	closed bool
 
 	// rows and cols hold the client's last reported window size (0 = unknown),
 	// guarded by s.mu.
 	rows uint16
 	cols uint16
+}
+
+// signalClose tells the client's writer goroutine to stop. The writer returns
+// without draining any remaining backlog.
+func (a *attacher) signalClose() {
+	a.mu.Lock()
+	a.closed = true
+	a.cond.Signal()
+	a.mu.Unlock()
 }
 
 // serveAttach upgrades an accepted connection to the bidirectional frame
@@ -51,7 +69,8 @@ func (s *Session) serveAttach(conn net.Conn, r io.Reader) {
 		return
 	}
 
-	a := &attacher{conn: conn, ch: make(chan outFrame, attachQueue), done: make(chan struct{})}
+	a := &attacher{conn: conn}
+	a.cond = sync.NewCond(&a.mu)
 
 	// Capture the snapshot and join the fanout atomically so no output is lost
 	// or duplicated between rendering the screen and subscribing to the stream.
@@ -94,7 +113,7 @@ func (s *Session) serveAttach(conn net.Conn, r io.Reader) {
 	s.mu.Unlock()
 	// The smallest client may have left; grow the PTY back to the new minimum.
 	s.applyMinSize()
-	close(a.done)
+	a.signalClose()
 	<-writerDone
 }
 
@@ -107,30 +126,73 @@ func (s *Session) attachWriter(a *attacher, snap []byte, done chan struct{}) {
 		return
 	}
 	for {
-		select {
-		case f := <-a.ch:
-			if err := WriteFrame(a.conn, f.tag, f.payload); err != nil {
+		a.mu.Lock()
+		for len(a.buf) == 0 && a.resync == nil && !a.closed {
+			a.cond.Wait()
+		}
+		if a.closed {
+			a.mu.Unlock()
+			return
+		}
+		// deliverOutput already dropped the stale pre-snapshot backlog when it
+		// captured the resync; the frames still queued here were rendered after
+		// the snapshot and so tile from it, so emit the snapshot ahead of them
+		// rather than dropping them. Taking one frame at a time and re-checking
+		// for a resync between writes means an overflow landing mid-write
+		// abandons any later stale frames on the next iteration instead of
+		// streaming the whole backlog ahead of the fresh snapshot.
+		if a.resync != nil {
+			resync := a.resync
+			a.resync = nil
+			a.mu.Unlock()
+			if err := WriteFrame(a.conn, FrameResync, resync); err != nil {
 				return
 			}
-		case <-a.done:
+			continue
+		}
+		f := a.buf[0]
+		a.buf = a.buf[1:]
+		a.mu.Unlock()
+		if err := WriteFrame(a.conn, f.tag, f.payload); err != nil {
 			return
 		}
 	}
 }
 
-// enqueueFrame hands a frame to a client's writer, disconnecting a client whose
-// backlog is full so a stuck consumer never stalls the output pump.
+// enqueueFrame queues a control frame for a client's writer. PTY output is
+// delivered via deliverOutput, which bounds the backlog; control frames (window
+// size requests) are infrequent and appended directly.
 func (s *Session) enqueueFrame(a *attacher, f outFrame) {
-	select {
-	case a.ch <- f:
-	default:
-		a.conn.Close()
+	a.mu.Lock()
+	a.buf = append(a.buf, f)
+	a.cond.Signal()
+	a.mu.Unlock()
+}
+
+// deliverOutput queues PTY output for a client. A client whose backlog overflows
+// is re-synced rather than disconnected: its stale backlog is dropped and its
+// writer is handed a fresh snapshot of the latest rendered terminal state,
+// after which live streaming resumes. It runs from the output pump while
+// holding s.outMu, so the snapshot reflects (and thus tiles cleanly with) the
+// bytes being fanned out now and the bytes fanned out afterwards.
+func (s *Session) deliverOutput(a *attacher, data []byte) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.buf) >= attachQueue {
+		a.buf = a.buf[:0]
+		snap, _ := s.term.DumpScreen()
+		// DumpScreen assumes a pre-cleared screen, so prepend a clear+home.
+		a.resync = append([]byte("\x1b[2J\x1b[H"), snap...)
+		a.cond.Signal()
+		return
 	}
+	a.buf = append(a.buf, outFrame{tag: FrameOutput, payload: data})
+	a.cond.Signal()
 }
 
 // fanout copies PTY output to every attached client. It holds s.mu only while
-// snapshotting the client set so enqueueing (which may close a slow client's
-// connection) happens without the lock held.
+// snapshotting the client set so per-client delivery (which may trigger a slow
+// client's re-sync) happens without the lock held.
 func (s *Session) fanout(data []byte) {
 	s.mu.Lock()
 	if len(s.attachers) == 0 {
@@ -144,7 +206,7 @@ func (s *Session) fanout(data []byte) {
 	}
 	s.mu.Unlock()
 	for _, a := range targets {
-		s.enqueueFrame(a, outFrame{tag: FrameOutput, payload: cp})
+		s.deliverOutput(a, cp)
 	}
 }
 
