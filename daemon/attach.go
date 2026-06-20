@@ -156,6 +156,12 @@ func (s *Session) attachWriter(a *attacher, snap []byte, done chan struct{}) {
 		if err := WriteFrame(a.conn, f.tag, f.payload); err != nil {
 			return
 		}
+		// A session-ended frame is the last thing a client receives: close the
+		// connection so its serveAttach reader unblocks and shuts down.
+		if f.tag == FrameEnded {
+			a.conn.Close()
+			return
+		}
 	}
 }
 
@@ -167,6 +173,25 @@ func (s *Session) enqueueFrame(a *attacher, f outFrame) {
 	a.buf = append(a.buf, f)
 	a.cond.Signal()
 	a.mu.Unlock()
+}
+
+// endAttachers tells every attached client's writer to deliver a final
+// session-ended frame after the bytes already queued, then close the
+// connection. Appending through each client's ordered buffer keeps the ended
+// frame behind all output the client has not yet drained.
+func (s *Session) endAttachers() {
+	s.mu.Lock()
+	attachers := make([]*attacher, 0, len(s.attachers))
+	for a := range s.attachers {
+		attachers = append(attachers, a)
+	}
+	s.mu.Unlock()
+	for _, a := range attachers {
+		a.mu.Lock()
+		a.buf = append(a.buf, outFrame{tag: FrameEnded})
+		a.cond.Signal()
+		a.mu.Unlock()
+	}
 }
 
 // deliverOutput queues PTY output for a client. A client whose backlog overflows

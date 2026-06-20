@@ -159,6 +159,11 @@ func (s *Session) run() error {
 	s.ptmx.Close()
 	<-s.outDone
 
+	// All output has now been fanned out. Tell still-attached clients the
+	// session ended so they receive every byte still queued, then a final ended
+	// frame, and close on their own instead of racing the drain grace below.
+	s.endAttachers()
+
 	perr := s.persist()
 	os.Remove(s.cfg.SocketPath)
 

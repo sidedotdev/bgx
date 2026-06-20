@@ -421,3 +421,88 @@ func TestAttachMultiClientMinSize(t *testing.T) {
 
 	bgxIn(t, dir, "kill", "minrsz")
 }
+
+// TestAttachClosesOnSessionEnd drives the attach client under a pty and verifies
+// that when the session ends the client exits on its own and resets only the
+// cursor (not a full terminal reset), leaving the final rendered output visible.
+func TestAttachClosesOnSessionEnd(t *testing.T) {
+	dir := runDir(t)
+
+	if res := bgxIn(t, dir, "run", "att2", "cat"); res.exitCode != 0 {
+		t.Fatalf("run exit = %d, stderr=%q", res.exitCode, res.stderr)
+	}
+	if res := bgxIn(t, dir, "send", "att2", "hello"); res.exitCode != 0 {
+		t.Fatalf("send exit = %d, stderr=%q", res.exitCode, res.stderr)
+	}
+	historyContains(t, dir, "att2", "hello")
+
+	cmd := exec.Command(binPath, "attach", "att2")
+	cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+dir, "TMPDIR="+dir)
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		t.Fatalf("pty start: %v", err)
+	}
+	defer ptmx.Close()
+
+	var mu sync.Mutex
+	var got []byte
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		buf := make([]byte, 64<<10)
+		for {
+			n, rerr := ptmx.Read(buf)
+			if n > 0 {
+				mu.Lock()
+				got = append(got, buf[:n]...)
+				mu.Unlock()
+			}
+			if rerr != nil {
+				return
+			}
+		}
+	}()
+
+	output := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return string(got)
+	}
+	waitFor := func(want string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if strings.Contains(output(), want) {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("attach output never contained %q; got %q", want, output())
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+
+	waitFor("hello")
+
+	// End the session; the attached client must close on its own.
+	bgxIn(t, dir, "kill", "att2")
+
+	select {
+	case <-readDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("attach client did not exit when the session ended")
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("attach client wait: %v", err)
+	}
+
+	// Session end resets only the cursor (show cursor + reset SGR) and must not
+	// issue the full terminal reset (ESC c) that a ctrl+\ detach uses.
+	out := output()
+	if strings.Contains(out, "\x1bc") {
+		t.Fatalf("session end performed a full terminal reset; got %q", out)
+	}
+	if !strings.Contains(out, "\x1b[?25h\x1b[0m") {
+		t.Fatalf("session end did not reset the cursor; got %q", out)
+	}
+}

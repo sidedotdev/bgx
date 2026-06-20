@@ -621,3 +621,97 @@ func slowAttachCapture(t *testing.T, socketPath string, sentinel []byte) (resync
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// TestSessionEndDeliversOutputThenCloses verifies that when a session ends, a
+// still-attached client receives all output produced through the end, followed
+// by a session-ended frame and an automatic connection close, with no final
+// bytes lost.
+func TestSessionEndDeliversOutputThenCloses(t *testing.T) {
+	const sentinel = "ZZENDSENTINELZZ"
+	sentinelBytes := []byte(sentinel)
+	// Emit a fixed body then a sentinel and sleep, so all output is produced
+	// before the session is killed and the client can confirm it arrived.
+	shCmd := fmt.Sprintf(`i=0; while [ $i -lt 200 ]; do printf 'l%%06d\n' "$i"; i=$((i+1)); done; printf '%s\n'; sleep 30`, sentinel)
+	s, socketPath, _, errCh := startTortureSession(t, "sessionend", []string{"sh", "-c", shCmd})
+
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	br := bufio.NewReader(conn)
+	if err := json.NewEncoder(conn).Encode(Request{Op: "attach"}); err != nil {
+		t.Fatalf("attach encode: %v", err)
+	}
+	line, err := br.ReadBytes('\n')
+	if err != nil {
+		t.Fatalf("attach handshake: %v", err)
+	}
+	var resp Response
+	if err := json.Unmarshal(line, &resp); err != nil || !resp.OK {
+		t.Fatalf("attach response: err=%v line=%q", err, line)
+	}
+
+	type result struct {
+		snapshot []byte
+		stream   []byte
+		ended    bool
+	}
+	sentinelSeen := make(chan struct{})
+	resCh := make(chan result, 1)
+	go func() {
+		var r result
+		gotSnapshot := false
+		signaled := false
+		for {
+			tag, payload, rerr := ReadFrame(br)
+			if rerr != nil {
+				break
+			}
+			switch tag {
+			case FrameOutput:
+				if !gotSnapshot {
+					gotSnapshot = true
+					r.snapshot = payload
+				} else {
+					r.stream = append(r.stream, payload...)
+				}
+			case FrameResync:
+				r.stream = append(r.stream, payload...)
+			case FrameEnded:
+				r.ended = true
+			}
+			if !signaled && (bytes.Contains(r.snapshot, sentinelBytes) || bytes.Contains(r.stream, sentinelBytes)) {
+				signaled = true
+				close(sentinelSeen)
+			}
+		}
+		resCh <- r
+	}()
+
+	select {
+	case <-sentinelSeen:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("client never received output through the sentinel")
+	}
+
+	// History waits for all buffered writes, so it is the exact ground truth.
+	hist := roundTrip(t, socketPath, Request{Op: "history"})
+	if !hist.OK {
+		t.Fatalf("history op failed: %q", hist.Error)
+	}
+	full := hist.History
+	s.kill()
+	<-errCh
+
+	var r result
+	select {
+	case r = <-resCh:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("client connection did not close automatically after session end")
+	}
+	if !r.ended {
+		t.Fatalf("client connection closed without a session-ended frame")
+	}
+	assertAttachTiles(t, 0, full, r.snapshot, r.stream)
+}
