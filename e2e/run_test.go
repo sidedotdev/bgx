@@ -126,6 +126,27 @@ func TestRunWaitReturnsNonzeroExitCode(t *testing.T) {
 	}
 }
 
+func TestRunSurfacesExecFailure(t *testing.T) {
+	dir := runDir(t)
+
+	res := bgxIn(t, dir, "run", "badexec", "no-such-command-xyz")
+	if res.exitCode == 0 {
+		t.Fatalf("run of missing command succeeded, want failure; stdout=%q", res.stdout)
+	}
+	m := decodeJSON(t, res.stdout)
+	if _, ok := m["error"].(string); !ok {
+		t.Fatalf("run output = %q, want JSON error", res.stdout)
+	}
+
+	info := decodeJSON(t, bgxIn(t, dir, "info", "badexec").stdout)
+	if info["exists"] != true {
+		t.Fatalf("info exists = %v, want true; stdout=%q", info["exists"], info)
+	}
+	if _, ok := info["error"].(string); !ok {
+		t.Fatalf("info missing error field: %v", info)
+	}
+}
+
 func TestInfoReportsMetadataAndOutput(t *testing.T) {
 	dir := runDir(t)
 

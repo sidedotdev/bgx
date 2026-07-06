@@ -154,6 +154,9 @@ func runAction(_ context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return failJSON("run: %v", err)
 	}
+	if info.Error != "" {
+		return failJSON("run: session %q failed to start: %s", id, info.Error)
+	}
 	return printJSON(os.Stdout, map[string]any{
 		"id":         info.ID,
 		"pid":        info.Pid,

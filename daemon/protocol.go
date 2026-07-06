@@ -37,4 +37,7 @@ type Info struct {
 	OutputBytes int64             `json:"output_bytes"`
 	ExitCode    *int              `json:"exit_code,omitempty"`
 	Killed      bool              `json:"killed,omitempty"`
+	// Error records why a session never produced output, most notably when the
+	// wrapped command failed to exec. It is empty for a session that started.
+	Error string `json:"error,omitempty"`
 }

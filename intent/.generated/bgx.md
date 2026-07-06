@@ -5,6 +5,7 @@ intent_links:
       - main.go:daemonCommand
       - main.go:daemonAction
       - client.go:spawnDaemon
+      - daemon/daemon.go:persistSpawnError
   - intent: "#socket-protocol"
     code:
       - daemon/protocol.go
@@ -59,6 +60,13 @@ bgx binary's hidden `__daemon` subcommand with `setsid` and detached stdio so it
 outlives the spawning client. The daemon owns the PTY, scrollback store, and
 unix socket for the session and exits once the command ends and its record is
 persisted.
+
+Because the daemon's stderr is detached to `/dev/null`, a wrapped command that
+fails to exec would otherwise die silently and leave `run`/`info` only able to
+report a socket-readiness timeout. To keep the cause visible, the daemon
+persists an ended record with a non-empty `Error` and a conventional 127 exit
+code when the command never starts; `run` then fails with that error instead of
+timing out.
 
 ## Socket protocol
 

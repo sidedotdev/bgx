@@ -128,6 +128,7 @@ func (s *Session) run() error {
 		return err
 	}
 	if err := s.start(); err != nil {
+		s.persistSpawnError(err)
 		s.listener.Close()
 		os.Remove(s.cfg.SocketPath)
 		s.store.Close()
@@ -527,6 +528,32 @@ func (s *Session) resize(cols, rows uint16) error {
 		}
 	}
 	return s.term.Resize(cols, rows)
+}
+
+// spawnFailureExitCode is reported for a session whose wrapped command never
+// execed, mirroring the shell convention for a command that cannot be run.
+const spawnFailureExitCode = 127
+
+// persistSpawnError records an ended session whose command never started so a
+// client can discover the cause instead of only timing out on the socket. Any
+// write error is ignored: the daemon is already failing and about to exit.
+func (s *Session) persistSpawnError(cause error) {
+	if s.cfg.RetentionDir == "" {
+		return
+	}
+	now := time.Now()
+	code := spawnFailureExitCode
+	info := &Info{
+		ID:        s.cfg.ID,
+		Running:   false,
+		Command:   s.cfg.Command,
+		Metadata:  s.cfg.Metadata,
+		StartedAt: now,
+		EndedAt:   &now,
+		ExitCode:  &code,
+		Error:     cause.Error(),
+	}
+	_ = writeRecord(s.cfg.RetentionDir, info, s.store.Snapshot())
 }
 
 // persist writes the ended session's record and retained history to the
