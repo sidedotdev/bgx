@@ -108,15 +108,19 @@ verify_assets() {
 }
 
 # smoke_test downloads the build for the current platform and runs it, proving
-# the uploaded binary is usable end to end.
+# the uploaded binary is usable end to end. The download and run happen in a
+# subshell so the temp-dir cleanup trap stays scoped and never fires later
+# against an unset variable under `set -u`.
 smoke_test() {
-	local tag="$1" asset tmp
+	local tag="$1" asset
 	asset="bgx-$(go env GOOS)-$(go env GOARCH)"
-	tmp="$(mktemp -d)"
-	trap 'rm -rf "$tmp"' RETURN
-	gh release download "$tag" --pattern "$asset" --dir "$tmp"
-	chmod +x "$tmp/$asset"
-	"$tmp/$asset" version
+	(
+		tmp="$(mktemp -d)"
+		trap 'rm -rf "$tmp"' EXIT
+		gh release download "$tag" --pattern "$asset" --dir "$tmp"
+		chmod +x "$tmp/$asset"
+		"$tmp/$asset" version
+	)
 }
 
 main() {
