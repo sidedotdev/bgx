@@ -1,3 +1,9 @@
+---
+intent_links:
+  - intent: "#github-actions"
+    code:
+      - .github/workflows/build.yml
+---
 # Build Process
 
 ## Release

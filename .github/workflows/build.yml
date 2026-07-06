@@ -1,0 +1,57 @@
+name: build
+
+# Manually triggered build across every target iroh-ffi supports. Each target
+# builds on a native runner rather than cross-compiling.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            goos: linux
+            goarch: amd64
+          - runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+          - runner: macos-14
+            goos: darwin
+            goarch: arm64
+          - runner: windows-2022
+            goos: windows
+            goarch: amd64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: build
+        # bash runs on every GitHub runner including Windows, keeping the mkdir
+        # and output path portable across shells.
+        shell: bash
+        env:
+          # Native compilation: the runner's own OS/arch matches the target, so
+          # cgo stays enabled and no cross toolchain is required.
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p dist
+          go build -o "dist/bgx-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goos == 'windows' && '.exe' || '' }}" .
+
+      - name: test
+        run: go test ./...
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bgx-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
