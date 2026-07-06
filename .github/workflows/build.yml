@@ -1,12 +1,15 @@
 name: build
 
-# Manually triggered build across every target iroh-ffi supports. Each target
-# builds on a native runner rather than cross-compiling.
+# Build across every supported target, triggered manually or by a tag push.
+# Each target builds on a native runner rather than cross-compiling.
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - "v*"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -41,7 +44,8 @@ jobs:
         shell: bash
         env:
           # Native compilation: the runner's own OS/arch matches the target, so
-          # cgo stays enabled and no cross toolchain is required.
+          # cgo stays enabled and no cross toolchain is required. libghostty-vt
+          # links statically, yielding a self-contained cli binary.
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
@@ -55,3 +59,12 @@ jobs:
         with:
           name: bgx-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*
+
+      # Tag pushes carry a pre-release created by the release script; attach
+      # each platform's binary so the release script can verify and promote it.
+      - name: upload to release
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.ref_name }}" dist/* --clobber
