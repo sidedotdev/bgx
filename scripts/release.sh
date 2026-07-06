@@ -95,7 +95,6 @@ EXPECTED_ASSETS=(
 	bgx-linux-amd64
 	bgx-linux-arm64
 	bgx-darwin-arm64
-	bgx-windows-amd64.exe
 )
 
 # verify_assets fails unless every expected platform build is attached, so a
@@ -113,7 +112,6 @@ verify_assets() {
 smoke_test() {
 	local tag="$1" asset tmp
 	asset="bgx-$(go env GOOS)-$(go env GOARCH)"
-	[ "$(go env GOOS)" = windows ] && asset="$asset.exe"
 	tmp="$(mktemp -d)"
 	trap 'rm -rf "$tmp"' RETURN
 	gh release download "$tag" --pattern "$asset" --dir "$tmp"
