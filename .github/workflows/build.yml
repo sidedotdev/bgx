@@ -69,6 +69,9 @@ jobs:
           cmake -S "$work" -B "$work/build" -DCMAKE_BUILD_TYPE=Release
           cmake --build "$work/build" --config Release
           printf 'PKG_CONFIG_PATH=%s/build/_deps/ghostty-src/zig-out/share/pkgconfig\n' "$work" >> "$GITHUB_ENV"
+          # On Windows pkg-config emits the static library's full .lib path,
+          # which cgo rejects as an "invalid flag" unless explicitly allowed.
+          printf 'CGO_LDFLAGS_ALLOW=.*[.]lib$\n' >> "$GITHUB_ENV"
 
       - name: build
         # bash runs on every GitHub runner including Windows, keeping the mkdir

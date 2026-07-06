@@ -57,12 +57,13 @@ func startSessionObjMeta(t *testing.T, id string, cmd []string, md map[string]st
 		t.Fatalf("new session: %v", err)
 	}
 	errCh = make(chan error, 1)
-	go func() { errCh <- s.run() }()
-	waitForSocket(t, socketPath)
+	ended := make(chan struct{})
+	go func() { errCh <- s.run(); close(ended) }()
+	waitForSocket(t, socketPath, ended)
 	return s, socketPath, retentionDir, errCh
 }
 
-func waitForSocket(t *testing.T, path string) {
+func waitForSocket(t *testing.T, path string, ended <-chan struct{}) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -71,6 +72,15 @@ func waitForSocket(t *testing.T, path string) {
 		if conn, err := net.Dial("unix", path); err == nil {
 			conn.Close()
 			return
+		}
+		// A command that exits near-instantly (e.g. "true") can create and
+		// remove its socket before any dial lands. That is correct daemon
+		// behavior, so a session that has already ended counts as ready rather
+		// than a spurious failure.
+		select {
+		case <-ended:
+			return
+		default:
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -358,8 +368,9 @@ func startTortureSession(t *testing.T, id string, cmd []string) (s *Session, soc
 		t.Fatalf("new session: %v", err)
 	}
 	errCh = make(chan error, 1)
-	go func() { errCh <- s.run() }()
-	waitForSocket(t, socketPath)
+	ended := make(chan struct{})
+	go func() { errCh <- s.run(); close(ended) }()
+	waitForSocket(t, socketPath, ended)
 	return s, socketPath, retentionDir, errCh
 }
 
