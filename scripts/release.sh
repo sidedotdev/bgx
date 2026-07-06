@@ -116,7 +116,7 @@ smoke_test() {
 	trap 'rm -rf "$tmp"' RETURN
 	gh release download "$tag" --pattern "$asset" --dir "$tmp"
 	chmod +x "$tmp/$asset"
-	"$tmp/$asset" --version
+	"$tmp/$asset" version
 }
 
 main() {
