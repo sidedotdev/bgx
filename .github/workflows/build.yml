@@ -38,6 +38,38 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - uses: lukka/get-cmake@latest
+
+      - name: install pkg-config
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            Linux) sudo apt-get update && sudo apt-get install -y pkg-config ;;
+            macOS) brew list pkg-config >/dev/null 2>&1 || brew install pkg-config ;;
+            Windows) choco install --no-progress pkgconfiglite ;;
+          esac
+
+      # libghostty-vt is a cgo dependency linked statically via pkg-config. It is
+      # not distributed as a package, so build it from source here: CMake fetches
+      # the pinned ghostty tree and drives zig. The module cache is read-only, so
+      # build in a writable copy and point pkg-config at the generated .pc file
+      # for the build and test steps.
+      - name: build libghostty-vt
+        shell: bash
+        run: |
+          go mod download go.mitchellh.com/libghostty
+          src="$(go list -m -f '{{.Dir}}' go.mitchellh.com/libghostty)"
+          work="$RUNNER_TEMP/libghostty"
+          cp -R "$src" "$work"
+          chmod -R u+w "$work"
+          cmake -S "$work" -B "$work/build" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$work/build" --config Release
+          printf 'PKG_CONFIG_PATH=%s/build/_deps/ghostty-src/zig-out/share/pkgconfig\n' "$work" >> "$GITHUB_ENV"
+
       - name: build
         # bash runs on every GitHub runner including Windows, keeping the mkdir
         # and output path portable across shells.
