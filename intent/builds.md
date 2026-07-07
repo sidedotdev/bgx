@@ -1,15 +1,3 @@
----
-intent_links:
-  - intent: "#release"
-    code:
-      - scripts/release.sh
-  - intent: "#github-actions"
-    code:
-      - .github/workflows/build.yml
-  - intent: "#verification-process"
-    code:
-      - scripts/release.sh
----
 # Build Process
 
 ## Release
@@ -29,13 +17,16 @@ directory, enabling grep debugging.
 ## Github Actions
 
 - Native runners are used rather than cross-compilation.
-- Builds supported:
+- All dependencies/actions/etc are pre-cached to the extent possible
+- Platforms supported:
   - linux amd64
   - linux arm64
   - darwin arm64
-- Runs tests
-- Creates static builds of the cli tool across platforms
-- Uploads the builds to the release
+- On each platform:
+  - Runs unit tests
+  - Creates static builds of the cli tool
+  - Runs full suite of black-box tests on static build
+  - Uploads the build to the release
 
 ## Verification Process
 
