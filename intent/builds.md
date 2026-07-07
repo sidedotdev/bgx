@@ -22,6 +22,7 @@ directory, enabling grep debugging.
   - linux amd64
   - linux arm64
   - darwin arm64
+  - darwin amd64
 - On each platform:
   - Runs unit tests
   - Creates static builds of the cli tool
