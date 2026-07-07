@@ -28,6 +28,9 @@ jobs:
           - runner: macos-14
             goos: darwin
             goarch: arm64
+          - runner: macos-13
+            goos: darwin
+            goarch: amd64
     steps:
       - uses: actions/checkout@v4
 

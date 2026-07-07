@@ -95,6 +95,7 @@ EXPECTED_ASSETS=(
 	bgx-linux-amd64
 	bgx-linux-arm64
 	bgx-darwin-arm64
+	bgx-darwin-amd64
 )
 
 # verify_assets fails unless every expected platform build is attached, so a

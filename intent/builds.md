@@ -1,3 +1,13 @@
+---
+intent_links:
+  - intent: "#github-actions"
+    code:
+      - .github/workflows/build.yml
+      - scripts/release.sh:EXPECTED_ASSETS
+  - intent: "#verification-process"
+    code:
+      - scripts/release.sh:smoke_test
+---
 # Build Process
 
 ## Release
