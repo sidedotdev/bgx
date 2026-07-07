@@ -643,7 +643,7 @@ func TestSessionEndDeliversOutputThenCloses(t *testing.T) {
 	// Emit a fixed body then a sentinel and sleep, so all output is produced
 	// before the session is killed and the client can confirm it arrived.
 	shCmd := fmt.Sprintf(`i=0; while [ $i -lt 200 ]; do printf 'l%%06d\n' "$i"; i=$((i+1)); done; printf '%s\n'; sleep 30`, sentinel)
-	s, socketPath, _, errCh := startTortureSession(t, "sessionend", []string{"sh", "-c", shCmd})
+	s, socketPath, retentionDir, errCh := startTortureSession(t, "sessionend", []string{"sh", "-c", shCmd})
 
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
@@ -706,12 +706,6 @@ func TestSessionEndDeliversOutputThenCloses(t *testing.T) {
 		t.Fatalf("client never received output through the sentinel")
 	}
 
-	// History waits for all buffered writes, so it is the exact ground truth.
-	hist := roundTrip(t, socketPath, Request{Op: "history"})
-	if !hist.OK {
-		t.Fatalf("history op failed: %q", hist.Error)
-	}
-	full := hist.History
 	s.kill()
 	<-errCh
 
@@ -723,6 +717,15 @@ func TestSessionEndDeliversOutputThenCloses(t *testing.T) {
 	}
 	if !r.ended {
 		t.Fatalf("client connection closed without a session-ended frame")
+	}
+	// The persisted history is the exact ground truth for every byte the PTY
+	// emitted, including diagnostics the shell prints as it is torn down (a
+	// job-control "Hangup" line on SIGHUP). Reading it after the session has
+	// ended avoids racing a pre-kill snapshot against that shutdown output,
+	// which the still-attached client legitimately receives.
+	full, err := os.ReadFile(HistoryPath(retentionDir, "sessionend"))
+	if err != nil {
+		t.Fatalf("read persisted history: %v", err)
 	}
 	assertAttachTiles(t, 0, full, r.snapshot, r.stream)
 }
