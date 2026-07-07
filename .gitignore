@@ -5,3 +5,6 @@
 
 # Go test binaries produced by `go test -c`.
 *.test
+
+# Detailed github actions logs synced by scripts/release.sh on failure.
+/.ci-logs/

@@ -17,7 +17,18 @@ func TestMain(m *testing.M) {
 }
 
 // run builds the bgx binary into a temp dir so tests exercise it as a black box.
+// BGX_E2E_BIN overrides the build with a prebuilt binary, letting CI point the
+// suite at the exact static build it uploads to a release.
 func run(m *testing.M) int {
+	if prebuilt := os.Getenv("BGX_E2E_BIN"); prebuilt != "" {
+		abs, err := filepath.Abs(prebuilt)
+		if err != nil {
+			panic("failed to resolve BGX_E2E_BIN: " + err.Error())
+		}
+		binPath = abs
+		return m.Run()
+	}
+
 	dir, err := os.MkdirTemp("", "bgx-e2e")
 	if err != nil {
 		panic(err)
