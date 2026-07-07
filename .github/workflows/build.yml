@@ -51,20 +51,36 @@ jobs:
 
       # libghostty-vt is a cgo dependency linked statically via pkg-config. It is
       # not distributed as a package, so build it from source here: CMake fetches
-      # the pinned ghostty tree and drives zig. The module cache is read-only, so
-      # build in a writable copy and point pkg-config at the generated .pc file
-      # for the build and test steps.
+      # the pinned ghostty tree and drives zig. The build is expensive, so its
+      # output is cached keyed on go.sum, which pins the libghostty version.
+      - name: cache libghostty-vt
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/libghostty
+          key: libghostty-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
+
+      # The module cache is read-only, so build in a writable copy and point
+      # pkg-config at the generated .pc file for the build and test steps. A
+      # cache hit reuses the prior build and only re-exports PKG_CONFIG_PATH.
       - name: build libghostty-vt
         shell: bash
         run: |
-          go mod download go.mitchellh.com/libghostty
-          src="$(go list -m -f '{{.Dir}}' go.mitchellh.com/libghostty)"
           work="$RUNNER_TEMP/libghostty"
-          cp -R "$src" "$work"
-          chmod -R u+w "$work"
-          cmake -S "$work" -B "$work/build" -DCMAKE_BUILD_TYPE=Release
-          cmake --build "$work/build" --config Release
+          if [ ! -d "$work/build" ]; then
+            go mod download go.mitchellh.com/libghostty
+            src="$(go list -m -f '{{.Dir}}' go.mitchellh.com/libghostty)"
+            cp -R "$src" "$work"
+            chmod -R u+w "$work"
+            cmake -S "$work" -B "$work/build" -DCMAKE_BUILD_TYPE=Release
+            cmake --build "$work/build" --config Release
+          fi
           printf 'PKG_CONFIG_PATH=%s/build/_deps/ghostty-src/zig-out/share/pkgconfig\n' "$work" >> "$GITHUB_ENV"
+
+      # Unit tests run against the packages directly; the black-box suite runs
+      # separately below against the uploaded static binary.
+      - name: unit tests
+        shell: bash
+        run: go test $(go list ./... | grep -v '/e2e$')
 
       - name: build
         # bash keeps the mkdir and output path portable across the native
@@ -80,8 +96,13 @@ jobs:
           mkdir -p dist
           go build -o "dist/bgx-${{ matrix.goos }}-${{ matrix.goarch }}" .
 
-      - name: test
-        run: go test ./...
+      # Run the full black-box suite against the exact static binary that gets
+      # uploaded, verifying the release artifact itself end to end.
+      - name: black-box tests
+        shell: bash
+        env:
+          BGX_E2E_BIN: ${{ github.workspace }}/dist/bgx-${{ matrix.goos }}-${{ matrix.goarch }}
+        run: go test ./e2e/...
 
       - uses: actions/upload-artifact@v4
         with:
