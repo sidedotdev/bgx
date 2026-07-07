@@ -1,3 +1,15 @@
+---
+intent_links:
+  - intent: "#release"
+    code:
+      - scripts/release.sh
+  - intent: "#github-actions"
+    code:
+      - .github/workflows/build.yml
+  - intent: "#verification-process"
+    code:
+      - scripts/release.sh
+---
 # Build Process
 
 ## Release
