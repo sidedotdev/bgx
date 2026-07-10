@@ -5,6 +5,7 @@ intent_links:
       - main.go:daemonCommand
       - main.go:daemonAction
       - client.go:spawnDaemon
+      - client.go:waitForSession
       - daemon/daemon.go:persistSpawnError
   - intent: "#socket-protocol"
     code:
@@ -56,17 +57,23 @@ file captures design choices not spelled out there.
 ## Daemonization
 
 Each session runs in its own detached daemon process, created by re-exec'ing the
-bgx binary's hidden `__daemon` subcommand with `setsid` and detached stdio so it
-outlives the spawning client. The daemon owns the PTY, scrollback store, and
-unix socket for the session and exits once the command ends and its record is
-persisted.
+bgx binary's hidden `__daemon` subcommand with `setsid` and detached stdin and
+stdout so it outlives the spawning client. The daemon owns the PTY, scrollback
+store, and unix socket for the session and exits once the command ends and its
+record is persisted.
 
-Because the daemon's stderr is detached to `/dev/null`, a wrapped command that
-fails to exec would otherwise die silently and leave `run`/`info` only able to
-report a socket-readiness timeout. To keep the cause visible, the daemon
-persists an ended record with a non-empty `Error` and a conventional 127 exit
-code when the command never starts; `run` then fails with that error instead of
-timing out.
+Daemon stderr is written to an independent temporary file while the spawning
+client monitors process exit until the session socket or ended record appears.
+This preserves failures that occur before either artifact can be created
+without tying daemon lifetime to the spawning client through a pipe. A short
+grace period after process exit allows a newly persisted record to become
+visible before the exit is classified as a startup failure. The monitor removes
+the temporary file after reading it.
+
+A wrapped command that fails to exec is represented by an ended record with a
+non-empty `Error` and a conventional 127 exit code. Other early daemon failures,
+including process crashes, are reported immediately using the first stderr line
+rather than being hidden behind the socket-readiness timeout.
 
 ## Socket protocol
 
