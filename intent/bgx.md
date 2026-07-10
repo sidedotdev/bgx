@@ -53,7 +53,8 @@ sharing with it the following features:
 1. separate client and daemon(s)
 1. daemon per session
 1. allow multiple clients to concurrently attach to the same session
-1. overlapping [sub-commands](#commands), though with a slightly different flavor
+1. overlapping [sub-commands](#commands), though with a slightly different
+   flavor
 1. uses the same libghostty-vt approach for rendering latest terminal state
 
 But is customized for our needs:
@@ -139,6 +140,12 @@ But is customized for our needs:
 - list|ls
 - version
 - help
+
+## Constraints
+
+- A daemon must outlive the client that starts it. If it exits before the
+  session becomes available, run must fail promptly with an actionable startup
+  error rather than a readiness timeout.
 
 ## Testing / Verification
 
