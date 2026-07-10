@@ -71,10 +71,19 @@ jobs:
             src="$(go list -m -f '{{.Dir}}' go.mitchellh.com/libghostty)"
             cp -R "$src" "$work"
             chmod -R u+w "$work"
-            cmake -S "$work" -B "$work/build" -DCMAKE_BUILD_TYPE=Release
+            if [ "${{ matrix.goos }}/${{ matrix.goarch }}" = "linux/arm64" ]; then
+              cmake -S "$work" -B "$work/build" -DCMAKE_BUILD_TYPE=Release \
+                -DGHOSTTY_VT_CROSS_TARGETS="linux-arm64=aarch64-linux-gnu"
+            else
+              cmake -S "$work" -B "$work/build" -DCMAKE_BUILD_TYPE=Release
+            fi
             cmake --build "$work/build" --config Release
           fi
-          printf 'PKG_CONFIG_PATH=%s/build/_deps/ghostty-src/zig-out/share/pkgconfig\n' "$work" >> "$GITHUB_ENV"
+          if [ "${{ matrix.goos }}/${{ matrix.goarch }}" = "linux/arm64" ]; then
+            printf 'PKG_CONFIG_PATH=%s/build/ghostty-linux-arm64/share/pkgconfig\n' "$work" >> "$GITHUB_ENV"
+          else
+            printf 'PKG_CONFIG_PATH=%s/build/_deps/ghostty-src/zig-out/share/pkgconfig\n' "$work" >> "$GITHUB_ENV"
+          fi
 
       # Unit tests run against the packages directly; the black-box suite runs
       # separately below against the uploaded static binary.

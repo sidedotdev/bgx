@@ -146,11 +146,12 @@ func runAction(_ context.Context, cmd *cli.Command) error {
 		return failConcurrencyLimit(ns, limit, active)
 	}
 
-	if err := spawnDaemon(id, command, metadata, cmd); err != nil {
+	process, err := spawnDaemon(id, command, metadata, cmd)
+	if err != nil {
 		return failJSON("run: %v", err)
 	}
 
-	info, err := waitForSession(id, socketReadyTimeout)
+	info, err := waitForSession(id, socketReadyTimeout, process)
 	if err != nil {
 		return failJSON("run: %v", err)
 	}
@@ -164,12 +165,23 @@ func runAction(_ context.Context, cmd *cli.Command) error {
 	})
 }
 
+type daemonExit struct {
+	err    error
+	detail string
+}
+
+type daemonProcess struct {
+	exited <-chan daemonExit
+}
+
 // spawnDaemon re-execs the bgx binary's hidden __daemon subcommand in its own
-// session with detached stdio so the session outlives this client.
-func spawnDaemon(id string, command, metadata []string, cmd *cli.Command) error {
+// session with detached stdin and stdout so the session outlives this client.
+// Stderr remains observable until startup completes so early daemon failures
+// can be returned to the invoking client.
+func spawnDaemon(id string, command, metadata []string, cmd *cli.Command) (*daemonProcess, error) {
 	exe, err := os.Executable()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	args := []string{
 		"__daemon",
@@ -200,22 +212,44 @@ func spawnDaemon(id string, command, metadata []string, cmd *cli.Command) error 
 
 	devnull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer devnull.Close()
+
+	stderr, err := os.CreateTemp("", "bgx-daemon-stderr-*")
+	if err != nil {
+		return nil, err
+	}
+	stderrPath := stderr.Name()
 
 	dc := exec.Command(exe, args...)
 	dc.Stdin = devnull
 	dc.Stdout = devnull
-	dc.Stderr = devnull
+	dc.Stderr = stderr
 	dc.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	return dc.Start()
+	if err := dc.Start(); err != nil {
+		stderr.Close()
+		os.Remove(stderrPath)
+		return nil, err
+	}
+	stderr.Close()
+
+	exited := make(chan daemonExit, 1)
+	go func() {
+		err := dc.Wait()
+		raw, _ := os.ReadFile(stderrPath)
+		os.Remove(stderrPath)
+		line, _, _ := strings.Cut(strings.TrimSpace(string(raw)), "\n")
+		exited <- daemonExit{err: err, detail: line}
+	}()
+
+	return &daemonProcess{exited: exited}, nil
 }
 
 // waitForSession blocks until a freshly spawned session answers on its socket
 // or, for a command that already exited, has persisted a record, returning the
 // resulting metadata snapshot.
-func waitForSession(id string, timeout time.Duration) (*daemon.Info, error) {
+func waitForSession(id string, timeout time.Duration, process *daemonProcess) (*daemon.Info, error) {
 	deadline := time.Now().Add(timeout)
 	for {
 		if info, ok := liveInfo(id); ok {
@@ -223,6 +257,24 @@ func waitForSession(id string, timeout time.Duration) (*daemon.Info, error) {
 		}
 		if info, ok := endedRecord(id); ok {
 			return info, nil
+		}
+		select {
+		case exit := <-process.exited:
+			recordDeadline := time.Now().Add(250 * time.Millisecond)
+			for time.Now().Before(recordDeadline) {
+				if info, ok := endedRecord(id); ok {
+					return info, nil
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if exit.detail != "" {
+				return nil, fmt.Errorf("session %q daemon exited before startup: %s", id, exit.detail)
+			}
+			if exit.err != nil {
+				return nil, fmt.Errorf("session %q daemon exited before startup: %v", id, exit.err)
+			}
+			return nil, fmt.Errorf("session %q daemon exited before startup", id)
+		default:
 		}
 		if time.Now().After(deadline) {
 			return nil, fmt.Errorf("timed out waiting for session %q to start", id)

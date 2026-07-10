@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -144,6 +145,28 @@ func TestRunSurfacesExecFailure(t *testing.T) {
 	}
 	if _, ok := info["error"].(string); !ok {
 		t.Fatalf("info missing error field: %v", info)
+	}
+}
+
+func TestRunReportsDaemonStartupFailure(t *testing.T) {
+	dir := runDir(t)
+
+	started := time.Now()
+	res := bgxIn(t, dir, "run", "--storage", "invalid", "bad-daemon", "/bin/echo", "hello")
+	if res.exitCode == 0 {
+		t.Fatalf("run with invalid storage succeeded; stdout=%q", res.stdout)
+	}
+	if elapsed := time.Since(started); elapsed >= 4*time.Second {
+		t.Fatalf("daemon startup failure took %v, want less than 4s", elapsed)
+	}
+
+	m := decodeJSON(t, res.stdout)
+	errText, ok := m["error"].(string)
+	if !ok {
+		t.Fatalf("run output = %q, want JSON error", res.stdout)
+	}
+	if strings.Contains(errText, "timed out") || !strings.Contains(errText, "daemon exited before startup") {
+		t.Fatalf("run error = %q, want immediate daemon startup error", errText)
 	}
 }
 
