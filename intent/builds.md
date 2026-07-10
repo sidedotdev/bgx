@@ -27,6 +27,8 @@ directory, enabling grep debugging.
 ## Github Actions
 
 - Native runners are used rather than cross-compilation.
+- Native dependencies in release artifacts must target the supported
+  architecture baseline rather than optional CPU features of the build runner.
 - All dependencies/actions/etc are pre-cached to the extent possible
 - Platforms supported:
   - linux amd64
