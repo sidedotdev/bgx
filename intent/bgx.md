@@ -147,38 +147,6 @@ But is customized for our needs:
   session becomes available, run must fail promptly with an actionable startup
   error rather than a readiness timeout.
 
-Address review comments on constraints commit:
-  
-
-<!-- I have a few review notes before preferring it over the pushed client fix:
-
-It still discards daemon stderr. For SIGILL, Wait() is probably sufficient, but
-ordinary startup errors that print a useful explanation and exit 1 become only
-exit status 1. My implementation retained the first stderr line using an
-independent temporary file, so it handles both crashes and normal initialization
-failures. If the intended contract is merely “not a timeout,” this version is
-enough; if errors must be actionable, preserving stderr is stronger.
-
-The test should assert the new behavior, not just any JSON error. I would
-require the error to contain daemon exited before startup completed and not
-contain timed out. Its timing assertion proves promptness, but checking the
-message prevents an unrelated early validation failure from satisfying the test.
-
-Immediate record recheck has a small race. After Wait() wins, a very short-lived
-valid session’s ended record may be in the process of becoming observable. A
-short bounded retry for the record is safer. The existing
-TestRunWaitReturnsNonzeroExitCode is important to run repeatedly because it
-exercises this boundary.
-
-The test setup itself is good. Blocking the exact Unix socket path forces a
-genuine pre-readiness daemon failure without adding test-only production hooks.
-It is more direct than my invalid-storage test.
-
-intent/bgx.md conflicts with the convention you just established. This commit
-edits the non-generated human intent. If the human intent change was separately
-approved, that is fine; otherwise the implementation links and inferred
-mechanics should go in intent/.generated/bgx.md only. -->
-
 ## Testing / Verification
 
 End-to-end tests verify the observable behavior of each of the CLI tool's
