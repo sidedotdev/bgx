@@ -146,11 +146,12 @@ func runAction(_ context.Context, cmd *cli.Command) error {
 		return failConcurrencyLimit(ns, limit, active)
 	}
 
-	if err := spawnDaemon(id, command, metadata, cmd); err != nil {
+	dc, err := spawnDaemon(id, command, metadata, cmd)
+	if err != nil {
 		return failJSON("run: %v", err)
 	}
 
-	info, err := waitForSession(id, socketReadyTimeout)
+	info, err := waitForSession(id, dc, socketReadyTimeout)
 	if err != nil {
 		return failJSON("run: %v", err)
 	}
@@ -165,11 +166,12 @@ func runAction(_ context.Context, cmd *cli.Command) error {
 }
 
 // spawnDaemon re-execs the bgx binary's hidden __daemon subcommand in its own
-// session with detached stdio so the session outlives this client.
-func spawnDaemon(id string, command, metadata []string, cmd *cli.Command) error {
+// session with detached stdio so the session outlives this client. It returns
+// the started process so the caller can detect an early exit during startup.
+func spawnDaemon(id string, command, metadata []string, cmd *cli.Command) (*exec.Cmd, error) {
 	exe, err := os.Executable()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	args := []string{
 		"__daemon",
@@ -200,7 +202,7 @@ func spawnDaemon(id string, command, metadata []string, cmd *cli.Command) error 
 
 	devnull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer devnull.Close()
 
@@ -209,13 +211,21 @@ func spawnDaemon(id string, command, metadata []string, cmd *cli.Command) error 
 	dc.Stdout = devnull
 	dc.Stderr = devnull
 	dc.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	return dc.Start()
+	if err := dc.Start(); err != nil {
+		return nil, err
+	}
+	return dc, nil
 }
 
 // waitForSession blocks until a freshly spawned session answers on its socket
 // or, for a command that already exited, has persisted a record, returning the
-// resulting metadata snapshot.
-func waitForSession(id string, timeout time.Duration) (*daemon.Info, error) {
+// resulting metadata snapshot. A daemon must outlive its client, so if the
+// spawned process exits before either happens, the startup failure is surfaced
+// promptly instead of waiting out the readiness timeout.
+func waitForSession(id string, proc *exec.Cmd, timeout time.Duration) (*daemon.Info, error) {
+	exited := make(chan error, 1)
+	go func() { exited <- proc.Wait() }()
+
 	deadline := time.Now().Add(timeout)
 	for {
 		if info, ok := liveInfo(id); ok {
@@ -223,6 +233,23 @@ func waitForSession(id string, timeout time.Duration) (*daemon.Info, error) {
 		}
 		if info, ok := endedRecord(id); ok {
 			return info, nil
+		}
+		select {
+		case werr := <-exited:
+			// The daemon exited during startup. Re-check for a live socket or a
+			// persisted record in case the session came and went between polls,
+			// otherwise report the exit as an actionable startup error.
+			if info, ok := liveInfo(id); ok {
+				return info, nil
+			}
+			if info, ok := endedRecord(id); ok {
+				return info, nil
+			}
+			if werr != nil {
+				return nil, fmt.Errorf("session %q daemon exited before startup completed: %v", id, werr)
+			}
+			return nil, fmt.Errorf("session %q daemon exited before startup completed", id)
+		default:
 		}
 		if time.Now().After(deadline) {
 			return nil, fmt.Errorf("timed out waiting for session %q to start", id)

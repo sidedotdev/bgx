@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"testing"
@@ -273,5 +274,36 @@ func TestRunConcurrentInvocationsRespectLimit(t *testing.T) {
 	}
 	if succeeded != limit {
 		t.Fatalf("concurrent runs succeeded = %d, want %d (cap must be enforced atomically)", succeeded, limit)
+	}
+}
+
+// TestRunFailsPromptlyWhenDaemonExitsBeforeStartup proves that a daemon which
+// dies during startup surfaces as an actionable run error well before the
+// readiness timeout, honoring the constraint that a daemon must outlive its
+// client.
+func TestRunFailsPromptlyWhenDaemonExitsBeforeStartup(t *testing.T) {
+	dir := runDir(t)
+
+	// Occupy the session's socket path with a non-empty directory so the daemon
+	// cannot bind its listener and exits during startup without persisting a
+	// record.
+	sockPath := filepath.Join(dir, "bgx", "startupfail.sock")
+	if err := os.MkdirAll(filepath.Join(sockPath, "block"), 0o700); err != nil {
+		t.Fatalf("occupy socket path: %v", err)
+	}
+
+	start := time.Now()
+	res := bgxIn(t, dir, "run", "startupfail", "echo", "hi")
+	elapsed := time.Since(start)
+
+	if res.exitCode == 0 {
+		t.Fatalf("run succeeded despite daemon startup failure; stdout=%q", res.stdout)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("run took %s to fail, want prompt failure well under the readiness timeout", elapsed)
+	}
+	m := decodeJSON(t, res.stdout)
+	if _, ok := m["error"].(string); !ok {
+		t.Fatalf("run output = %q, want JSON error", res.stdout)
 	}
 }

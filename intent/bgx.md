@@ -41,6 +41,11 @@ intent_links:
       - scrollback/store.go:Snapshot
       - vtscan/vtscan.go
       - vt/vt.go
+  - intent: "#constraints"
+    code:
+      - client.go:spawnDaemon
+      - client.go:waitForSession
+      - e2e/run_test.go:TestRunFailsPromptlyWhenDaemonExitsBeforeStartup
 ---
 
 # bgx
