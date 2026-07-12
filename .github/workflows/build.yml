@@ -106,6 +106,19 @@ jobs:
           done
           printf 'PKG_CONFIG_PATH=%s/share/pkgconfig\n' "$prefix" >> "$GITHUB_ENV"
 
+      - name: debug pkg-config
+        shell: bash
+        run: |
+          work="$RUNNER_TEMP/libghostty"
+          prefix="$work/build/ghostty-${{ matrix.vt }}"
+          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH"
+          echo "=== all libghostty-vt-static.pc under build ==="
+          find "$work/build" -name 'libghostty-vt-static.pc' -print -exec cat {} \;
+          echo "=== pkg-config resolution ==="
+          pkg-config --libs --static libghostty-vt-static || true
+          echo "=== prefix lib listing ==="
+          ls -la "$prefix/lib" || true
+
       # Unit tests run against the packages directly; the black-box suite runs
       # separately below against the uploaded static binary.
       - name: unit tests
