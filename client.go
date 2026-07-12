@@ -146,12 +146,13 @@ func runAction(_ context.Context, cmd *cli.Command) error {
 		return failConcurrencyLimit(ns, limit, active)
 	}
 
-	dc, err := spawnDaemon(id, command, metadata, cmd)
+	dc, stderrPath, err := spawnDaemon(id, command, metadata, cmd)
 	if err != nil {
 		return failJSON("run: %v", err)
 	}
+	defer os.Remove(stderrPath)
 
-	info, err := waitForSession(id, dc, socketReadyTimeout)
+	info, err := waitForSession(id, dc, stderrPath, socketReadyTimeout)
 	if err != nil {
 		return failJSON("run: %v", err)
 	}
@@ -167,11 +168,14 @@ func runAction(_ context.Context, cmd *cli.Command) error {
 
 // spawnDaemon re-execs the bgx binary's hidden __daemon subcommand in its own
 // session with detached stdio so the session outlives this client. It returns
-// the started process so the caller can detect an early exit during startup.
-func spawnDaemon(id string, command, metadata []string, cmd *cli.Command) (*exec.Cmd, error) {
+// the started process so the caller can detect an early exit during startup,
+// plus the path to a temporary file capturing the daemon's stderr so a startup
+// failure can surface the daemon's own explanation rather than only its exit
+// status.
+func spawnDaemon(id string, command, metadata []string, cmd *cli.Command) (*exec.Cmd, string, error) {
 	exe, err := os.Executable()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	args := []string{
 		"__daemon",
@@ -202,19 +206,26 @@ func spawnDaemon(id string, command, metadata []string, cmd *cli.Command) (*exec
 
 	devnull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer devnull.Close()
+
+	stderr, err := os.CreateTemp("", "bgx-daemon-stderr-*")
+	if err != nil {
+		return nil, "", err
+	}
+	defer stderr.Close()
 
 	dc := exec.Command(exe, args...)
 	dc.Stdin = devnull
 	dc.Stdout = devnull
-	dc.Stderr = devnull
+	dc.Stderr = stderr
 	dc.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := dc.Start(); err != nil {
-		return nil, err
+		os.Remove(stderr.Name())
+		return nil, "", err
 	}
-	return dc, nil
+	return dc, stderr.Name(), nil
 }
 
 // waitForSession blocks until a freshly spawned session answers on its socket
@@ -222,7 +233,7 @@ func spawnDaemon(id string, command, metadata []string, cmd *cli.Command) (*exec
 // resulting metadata snapshot. A daemon must outlive its client, so if the
 // spawned process exits before either happens, the startup failure is surfaced
 // promptly instead of waiting out the readiness timeout.
-func waitForSession(id string, proc *exec.Cmd, timeout time.Duration) (*daemon.Info, error) {
+func waitForSession(id string, proc *exec.Cmd, stderrPath string, timeout time.Duration) (*daemon.Info, error) {
 	exited := make(chan error, 1)
 	go func() { exited <- proc.Wait() }()
 
@@ -236,19 +247,18 @@ func waitForSession(id string, proc *exec.Cmd, timeout time.Duration) (*daemon.I
 		}
 		select {
 		case werr := <-exited:
-			// The daemon exited during startup. Re-check for a live socket or a
-			// persisted record in case the session came and went between polls,
-			// otherwise report the exit as an actionable startup error.
+			// The daemon exited during startup. Re-check for a live socket, then
+			// give a very short-lived but valid session's ended record a brief
+			// bounded window to become observable, since Wait() can win the race
+			// against the record's fsync/rename. Only then report the exit as an
+			// actionable startup error.
 			if info, ok := liveInfo(id); ok {
 				return info, nil
 			}
-			if info, ok := endedRecord(id); ok {
+			if info, ok := recheckEndedRecord(id, 250*time.Millisecond); ok {
 				return info, nil
 			}
-			if werr != nil {
-				return nil, fmt.Errorf("session %q daemon exited before startup completed: %v", id, werr)
-			}
-			return nil, fmt.Errorf("session %q daemon exited before startup completed", id)
+			return nil, startupError(id, werr, stderrPath)
 		default:
 		}
 		if time.Now().After(deadline) {
@@ -256,6 +266,53 @@ func waitForSession(id string, proc *exec.Cmd, timeout time.Duration) (*daemon.I
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// recheckEndedRecord polls for an ended record over a short bounded window,
+// closing the race where the daemon process has exited but its persisted record
+// has not yet become observable to the client.
+func recheckEndedRecord(id string, within time.Duration) (*daemon.Info, bool) {
+	deadline := time.Now().Add(within)
+	for {
+		if info, ok := endedRecord(id); ok {
+			return info, true
+		}
+		if time.Now().After(deadline) {
+			return nil, false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// startupError builds the run failure for a daemon that exited before its
+// session became available, preferring the daemon's own stderr so the message
+// is actionable and falling back to the process exit status otherwise.
+func startupError(id string, werr error, stderrPath string) error {
+	if line := firstStderrLine(stderrPath); line != "" {
+		return fmt.Errorf("session %q daemon exited before startup completed: %s", id, line)
+	}
+	if werr != nil {
+		return fmt.Errorf("session %q daemon exited before startup completed: %v", id, werr)
+	}
+	return fmt.Errorf("session %q daemon exited before startup completed", id)
+}
+
+// firstStderrLine returns the first non-blank line captured from the daemon's
+// stderr file, or the empty string if none is available.
+func firstStderrLine(path string) string {
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func infoAction(_ context.Context, cmd *cli.Command) error {

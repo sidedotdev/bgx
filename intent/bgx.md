@@ -23,6 +23,14 @@ intent_links:
       - client.go:listAction
       - attach.go:attachAction
       - main.go:versionAction
+  - intent: "#constraints"
+    code:
+      - client.go:waitForSession
+      - client.go:spawnDaemon
+      - client.go:startupError
+      - client.go:recheckEndedRecord
+      - e2e/run_test.go:TestRunFailsPromptlyWhenDaemonExitsBeforeStartup
+      - e2e/run_test.go:FuzzRunShortLivedSessionExitCode
   - intent: "#testing--verification"
     code:
       - e2e/run_test.go

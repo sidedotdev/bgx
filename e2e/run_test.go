@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -277,6 +278,41 @@ func TestRunConcurrentInvocationsRespectLimit(t *testing.T) {
 	}
 }
 
+// FuzzRunShortLivedSessionExitCode exercises the timing boundary where a
+// session's command exits almost immediately after spawn, so the daemon's
+// Wait() can win the race against its persisted ended record becoming
+// observable to the client. Across the whole spread of tiny delays, run must
+// never spuriously report a startup failure for a session that is in fact
+// valid, and the session's true exit code must remain observable afterwards.
+func FuzzRunShortLivedSessionExitCode(f *testing.F) {
+	for _, seed := range []int{0, 1, 3, 7, 15, 31, 60} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, delayMS int) {
+		if delayMS < 0 || delayMS > 200 {
+			t.Skip()
+		}
+		dir := runDir(t)
+		script := fmt.Sprintf("sleep %s; exit 3", strconv.FormatFloat(float64(delayMS)/1000, 'f', -1, 64))
+		res := bgxIn(t, dir, "run", "fuzz", "sh", "-c", script)
+		if res.exitCode != 0 {
+			t.Fatalf("run exit code = %d (delay %dms), want 0; stdout=%q stderr=%q", res.exitCode, delayMS, res.stdout, res.stderr)
+		}
+		started := decodeJSON(t, res.stdout)
+		if errMsg, ok := started["error"].(string); ok {
+			t.Fatalf("run reported error %q for a valid short-lived session (delay %dms)", errMsg, delayMS)
+		}
+		if started["id"] != "fuzz" {
+			t.Fatalf("run id = %v (delay %dms), want fuzz", started["id"], delayMS)
+		}
+
+		m := waitEnded(t, dir, "fuzz")
+		if m["exit_code"] != float64(3) {
+			t.Fatalf("ended exit_code = %v (delay %dms), want 3", m["exit_code"], delayMS)
+		}
+	})
+}
+
 // TestRunFailsPromptlyWhenDaemonExitsBeforeStartup proves that a daemon which
 // dies during startup surfaces as an actionable run error well before the
 // readiness timeout, honoring the constraint that a daemon must outlive its
@@ -303,7 +339,17 @@ func TestRunFailsPromptlyWhenDaemonExitsBeforeStartup(t *testing.T) {
 		t.Fatalf("run took %s to fail, want prompt failure well under the readiness timeout", elapsed)
 	}
 	m := decodeJSON(t, res.stdout)
-	if _, ok := m["error"].(string); !ok {
+	errMsg, ok := m["error"].(string)
+	if !ok {
 		t.Fatalf("run output = %q, want JSON error", res.stdout)
+	}
+	// The message must identify the startup failure specifically, so an
+	// unrelated early validation error can't satisfy the test, and it must not
+	// be the readiness timeout, proving the daemon's exit was detected promptly.
+	if !strings.Contains(errMsg, "daemon exited before startup completed") {
+		t.Fatalf("run error = %q, want it to mention the daemon exiting before startup completed", errMsg)
+	}
+	if strings.Contains(errMsg, "timed out") {
+		t.Fatalf("run error = %q, want a prompt startup failure, not a readiness timeout", errMsg)
 	}
 }
