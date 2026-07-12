@@ -99,36 +99,17 @@ jobs:
             cmake --build "$work/build" --target "zig_build_lib_vt_${{ matrix.vt }}"
           fi
           prefix="$work/build/ghostty-${{ matrix.vt }}"
-          # zig bakes an absolute install prefix into the generated pkg-config
-          # files. A restored zig build cache can carry over a prefix from an
-          # earlier build layout, leaving the static .pc pointing at an archive
-          # path that does not exist and breaking the cgo link. Pin each .pc
-          # prefix to where the cross-target artifacts actually landed.
+          # Defensively pin the generated pkg-config prefix to where the
+          # cross-target artifacts actually landed. zig bakes an absolute install
+          # prefix into these .pc files, and a mismatched prefix leaves the
+          # static .pc pointing at an archive path that does not exist, breaking
+          # the cgo link.
           for pc in "$prefix"/share/pkgconfig/*.pc; do
             tmp="$(mktemp)"
             sed "s|^prefix=.*|prefix=$prefix|" "$pc" >"$tmp"
             mv "$tmp" "$pc"
           done
           printf 'PKG_CONFIG_PATH=%s/share/pkgconfig\n' "$prefix" >> "$GITHUB_ENV"
-
-      - name: debug pkg-config
-        shell: bash
-        run: |
-          work="$RUNNER_TEMP/libghostty"
-          prefix="$work/build/ghostty-${{ matrix.vt }}"
-          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH"
-          echo "=== all .pc files under build ==="
-          find "$work/build" -name '*.pc' | while read -r f; do
-            echo "----- $f"
-            cat "$f"
-            echo
-          done
-          echo "=== all libghostty-vt.a under build ==="
-          find "$work/build" -name 'libghostty-vt.a'
-          echo "=== pkg-config --libs --static libghostty-vt-static ==="
-          pkg-config --libs --static libghostty-vt-static || true
-          echo "=== pkg-config path used ==="
-          pkg-config --debug --libs --static libghostty-vt-static 2>&1 | grep -iE "Reading|Parsing|Adding.*pkgconfig|Path position" | head -20 || true
 
       # Unit tests run against the packages directly; the black-box suite runs
       # separately below against the uploaded static binary.

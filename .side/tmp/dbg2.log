@@ -1,0 +1,508 @@
+﻿2026-07-12T11:26:19.2424234Z Current runner version: '2.335.1'
+2026-07-12T11:26:19.2448800Z ##[group]Runner Image Provisioner
+2026-07-12T11:26:19.2450168Z Hosted Compute Agent
+2026-07-12T11:26:19.2450763Z Version: 20260624.560
+2026-07-12T11:26:19.2451502Z Commit: 925d229a51159bc391ae97e54a2dd1fe20af789d
+2026-07-12T11:26:19.2452229Z Build Date: 2026-06-24T18:26:47Z
+2026-07-12T11:26:19.2452979Z Worker ID: {303f1800-843f-48af-bcce-606fad745441}
+2026-07-12T11:26:19.2453711Z Azure Region: centralus
+2026-07-12T11:26:19.2454295Z ##[endgroup]
+2026-07-12T11:26:19.2455852Z ##[group]Operating System
+2026-07-12T11:26:19.2456509Z Ubuntu
+2026-07-12T11:26:19.2457046Z 24.04.4
+2026-07-12T11:26:19.2457660Z LTS
+2026-07-12T11:26:19.2458212Z ##[endgroup]
+2026-07-12T11:26:19.2458908Z ##[group]Runner Image
+2026-07-12T11:26:19.2459768Z Image: ubuntu-24.04
+2026-07-12T11:26:19.2460760Z Version: 20260705.232.1
+2026-07-12T11:26:19.2462133Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20260705.232/images/ubuntu/Ubuntu2404-Readme.md
+2026-07-12T11:26:19.2463733Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20260705.232
+2026-07-12T11:26:19.2464689Z ##[endgroup]
+2026-07-12T11:26:19.2465837Z ##[group]GITHUB_TOKEN Permissions
+2026-07-12T11:26:19.2467989Z Contents: write
+2026-07-12T11:26:19.2468595Z Metadata: read
+2026-07-12T11:26:19.2469486Z ##[endgroup]
+2026-07-12T11:26:19.2471994Z Secret source: Actions
+2026-07-12T11:26:19.2473031Z Prepare workflow directory
+2026-07-12T11:26:19.2810156Z Prepare all required actions
+2026-07-12T11:26:19.2850610Z Getting action download info
+2026-07-12T11:26:19.5746481Z Download action repository 'actions/checkout@v4' (SHA:34e114876b0b11c390a56381ad16ebd13914f8d5)
+2026-07-12T11:26:20.0456421Z Download action repository 'actions/setup-go@v5' (SHA:40f1582b2485089dde7abd97c1529aa768e1baff)
+2026-07-12T11:26:20.5212947Z Download action repository 'mlugg/setup-zig@v2' (SHA:d1434d08867e3ee9daa34448df10607b98908d29)
+2026-07-12T11:26:22.0955051Z Download action repository 'lukka/get-cmake@latest' (SHA:80ed063af494e28dd56b85fb7a630f2f8f55ceed)
+2026-07-12T11:26:22.4993412Z Download action repository 'actions/cache@v4' (SHA:0057852bfaa89a56745cba8c7296529d2fc39830)
+2026-07-12T11:26:22.5873842Z Download action repository 'actions/upload-artifact@v4' (SHA:ea165f8d65b6e75b540449e92b4886f43607fa02)
+2026-07-12T11:26:22.8056705Z Complete job name: build linux/amd64
+2026-07-12T11:26:22.8765223Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+2026-07-12T11:26:22.8773819Z ##[group]Run actions/checkout@v4
+2026-07-12T11:26:22.8774280Z with:
+2026-07-12T11:26:22.8774497Z   repository: sidedotdev/bgx
+2026-07-12T11:26:22.8777236Z   token: ***
+2026-07-12T11:26:22.8777446Z   ssh-strict: true
+2026-07-12T11:26:22.8777661Z   ssh-user: git
+2026-07-12T11:26:22.8777892Z   persist-credentials: true
+2026-07-12T11:26:22.8778133Z   clean: true
+2026-07-12T11:26:22.8778348Z   sparse-checkout-cone-mode: true
+2026-07-12T11:26:22.8778608Z   fetch-depth: 1
+2026-07-12T11:26:22.8778804Z   fetch-tags: false
+2026-07-12T11:26:22.8779215Z   show-progress: true
+2026-07-12T11:26:22.8779438Z   lfs: false
+2026-07-12T11:26:22.8779649Z   submodules: false
+2026-07-12T11:26:22.8779858Z   set-safe-directory: true
+2026-07-12T11:26:22.8780341Z ##[endgroup]
+2026-07-12T11:26:22.9774853Z Syncing repository: sidedotdev/bgx
+2026-07-12T11:26:22.9776794Z ##[group]Getting Git version info
+2026-07-12T11:26:22.9777347Z Working directory is '/home/runner/work/bgx/bgx'
+2026-07-12T11:26:22.9778204Z [command]/usr/bin/git version
+2026-07-12T11:26:22.9811742Z git version 2.54.0
+2026-07-12T11:26:22.9872109Z ##[endgroup]
+2026-07-12T11:26:22.9886371Z Temporarily overriding HOME='/home/runner/work/_temp/6bf50d54-0982-4694-be55-70fcf6fa0601' before making global git config changes
+2026-07-12T11:26:22.9888259Z Adding repository directory to the temporary git global config as a safe directory
+2026-07-12T11:26:22.9893217Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/bgx/bgx
+2026-07-12T11:26:22.9950123Z Deleting the contents of '/home/runner/work/bgx/bgx'
+2026-07-12T11:26:22.9954002Z ##[group]Initializing the repository
+2026-07-12T11:26:22.9959007Z [command]/usr/bin/git init /home/runner/work/bgx/bgx
+2026-07-12T11:26:23.0048780Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-07-12T11:26:23.0050204Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-07-12T11:26:23.0051357Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-07-12T11:26:23.0052216Z hint: call:
+2026-07-12T11:26:23.0052736Z hint:
+2026-07-12T11:26:23.0053555Z hint: 	git config --global init.defaultBranch <name>
+2026-07-12T11:26:23.0054079Z hint:
+2026-07-12T11:26:23.0054430Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-07-12T11:26:23.0054984Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-07-12T11:26:23.0055378Z hint:
+2026-07-12T11:26:23.0055580Z hint: 	git branch -m <name>
+2026-07-12T11:26:23.0055810Z hint:
+2026-07-12T11:26:23.0056129Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-07-12T11:26:23.0056644Z Initialized empty Git repository in /home/runner/work/bgx/bgx/.git/
+2026-07-12T11:26:23.0067899Z [command]/usr/bin/git remote add origin https://github.com/sidedotdev/bgx
+2026-07-12T11:26:23.0129974Z ##[endgroup]
+2026-07-12T11:26:23.0130671Z ##[group]Disabling automatic garbage collection
+2026-07-12T11:26:23.0135334Z [command]/usr/bin/git config --local gc.auto 0
+2026-07-12T11:26:23.0167012Z ##[endgroup]
+2026-07-12T11:26:23.0168195Z ##[group]Setting up auth
+2026-07-12T11:26:23.0173091Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-07-12T11:26:23.0207813Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-07-12T11:26:23.0548580Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-07-12T11:26:23.0584975Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-07-12T11:26:23.0816246Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-07-12T11:26:23.0853074Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-07-12T11:26:23.1076114Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-07-12T11:26:23.1151009Z ##[endgroup]
+2026-07-12T11:26:23.1151668Z ##[group]Fetching the repository
+2026-07-12T11:26:23.1152599Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +b86ffec108678d12326a380e2cdc004e8ddcb077:refs/remotes/origin/side/unrelease-and-fix-issues
+2026-07-12T11:26:23.4230202Z From https://github.com/sidedotdev/bgx
+2026-07-12T11:26:23.4231331Z  * [new ref]         b86ffec108678d12326a380e2cdc004e8ddcb077 -> origin/side/unrelease-and-fix-issues
+2026-07-12T11:26:23.4264622Z ##[endgroup]
+2026-07-12T11:26:23.4265249Z ##[group]Determining the checkout info
+2026-07-12T11:26:23.4267335Z ##[endgroup]
+2026-07-12T11:26:23.4273245Z [command]/usr/bin/git sparse-checkout disable
+2026-07-12T11:26:23.4321040Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-07-12T11:26:23.4350957Z ##[group]Checking out the ref
+2026-07-12T11:26:23.4356304Z [command]/usr/bin/git checkout --progress --force -B side/unrelease-and-fix-issues refs/remotes/origin/side/unrelease-and-fix-issues
+2026-07-12T11:26:23.4439712Z Switched to a new branch 'side/unrelease-and-fix-issues'
+2026-07-12T11:26:23.4443538Z branch 'side/unrelease-and-fix-issues' set up to track 'origin/side/unrelease-and-fix-issues'.
+2026-07-12T11:26:23.4449455Z ##[endgroup]
+2026-07-12T11:26:23.4492809Z [command]/usr/bin/git log -1 --format=%H
+2026-07-12T11:26:23.4528023Z b86ffec108678d12326a380e2cdc004e8ddcb077
+2026-07-12T11:26:23.4768517Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+2026-07-12T11:26:23.4770698Z ##[group]Run actions/setup-go@v5
+2026-07-12T11:26:23.4770964Z with:
+2026-07-12T11:26:23.4771169Z   go-version-file: go.mod
+2026-07-12T11:26:23.4771403Z   check-latest: false
+2026-07-12T11:26:23.4774084Z   token: ***
+2026-07-12T11:26:23.4774286Z   cache: true
+2026-07-12T11:26:23.4774496Z ##[endgroup]
+2026-07-12T11:26:23.6022571Z Setup go version spec 1.26.0
+2026-07-12T11:26:23.6042587Z Attempting to download 1.26.0...
+2026-07-12T11:26:23.6147992Z (node:2292) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-07-12T11:26:23.6149441Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-07-12T11:26:24.1495779Z matching 1.26.0...
+2026-07-12T11:26:24.1534323Z Acquiring 1.26.0 from https://github.com/actions/go-versions/releases/download/1.26.0-21889650668/go-1.26.0-linux-x64.tar.gz
+2026-07-12T11:26:24.7914237Z Extracting Go...
+2026-07-12T11:26:24.8057125Z [command]/usr/bin/tar xz --warning=no-unknown-keyword --overwrite -C /home/runner/work/_temp/431a624e-f40d-46f6-8191-f69351195fbf -f /home/runner/work/_temp/6c4fdd77-69f2-46e3-9fa7-4d1d57578e69
+2026-07-12T11:26:26.3987162Z Successfully extracted go to /home/runner/work/_temp/431a624e-f40d-46f6-8191-f69351195fbf
+2026-07-12T11:26:26.3987905Z Adding to the cache ...
+2026-07-12T11:26:32.0054063Z Successfully cached go to /opt/hostedtoolcache/go/1.26.0/x64
+2026-07-12T11:26:32.0054539Z Added go to the path
+2026-07-12T11:26:32.0057046Z Successfully set up Go version 1.26.0
+2026-07-12T11:26:32.0284878Z [command]/opt/hostedtoolcache/go/1.26.0/x64/bin/go env GOMODCACHE
+2026-07-12T11:26:32.0323521Z [command]/opt/hostedtoolcache/go/1.26.0/x64/bin/go env GOCACHE
+2026-07-12T11:26:32.0368590Z /home/runner/go/pkg/mod
+2026-07-12T11:26:32.0385392Z /home/runner/.cache/go-build
+2026-07-12T11:26:32.1769646Z Cache hit for: setup-go-Linux-x64-ubuntu24-go-1.26.0-5bde2d0ac4642f496b6c01f7f3a759b09e100d7f40364475db2c9ffdffe13560
+2026-07-12T11:26:32.1905668Z (node:2292) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+2026-07-12T11:26:33.1851600Z Received 99015863 of 99015863 (100.0%), 108.7 MBs/sec
+2026-07-12T11:26:33.1852611Z Cache Size: ~94 MB (99015863 B)
+2026-07-12T11:26:33.1957166Z [command]/usr/bin/tar -xf /home/runner/work/_temp/c50d3cc8-a7cf-4182-ae32-95b0744bb95d/cache.tzst -P -C /home/runner/work/bgx/bgx --use-compress-program unzstd
+2026-07-12T11:26:33.5460187Z Cache restored successfully
+2026-07-12T11:26:33.5512873Z Cache restored from key: setup-go-Linux-x64-ubuntu24-go-1.26.0-5bde2d0ac4642f496b6c01f7f3a759b09e100d7f40364475db2c9ffdffe13560
+2026-07-12T11:26:33.5538536Z go version go1.26.0 linux/amd64
+2026-07-12T11:26:33.5538879Z 
+2026-07-12T11:26:33.5539601Z ##[group]go env
+2026-07-12T11:26:33.5681213Z AR='ar'
+2026-07-12T11:26:33.5681611Z CC='gcc'
+2026-07-12T11:26:33.5681956Z CGO_CFLAGS='-O2 -g'
+2026-07-12T11:26:33.5682350Z CGO_CPPFLAGS=''
+2026-07-12T11:26:33.5682740Z CGO_CXXFLAGS='-O2 -g'
+2026-07-12T11:26:33.5683149Z CGO_ENABLED='1'
+2026-07-12T11:26:33.5683528Z CGO_FFLAGS='-O2 -g'
+2026-07-12T11:26:33.5683997Z CGO_LDFLAGS='-O2 -g'
+2026-07-12T11:26:33.5684383Z CXX='g++'
+2026-07-12T11:26:33.5684707Z GCCGO='gccgo'
+2026-07-12T11:26:33.5685367Z GO111MODULE=''
+2026-07-12T11:26:33.5685720Z GOAMD64='v1'
+2026-07-12T11:26:33.5686059Z GOARCH='amd64'
+2026-07-12T11:26:33.5686391Z GOAUTH='netrc'
+2026-07-12T11:26:33.5686721Z GOBIN=''
+2026-07-12T11:26:33.5687078Z GOCACHE='/home/runner/.cache/go-build'
+2026-07-12T11:26:33.5687569Z GOCACHEPROG=''
+2026-07-12T11:26:33.5687933Z GODEBUG=''
+2026-07-12T11:26:33.5688555Z GOENV='/home/runner/.config/go/env'
+2026-07-12T11:26:33.5689348Z GOEXE=''
+2026-07-12T11:26:33.5689703Z GOEXPERIMENT=''
+2026-07-12T11:26:33.5690074Z GOFIPS140='off'
+2026-07-12T11:26:33.5690449Z GOFLAGS=''
+2026-07-12T11:26:33.5691607Z GOGCCFLAGS='-fPIC -m64 -pthread -Wl,--no-gc-sections -fmessage-length=0 -ffile-prefix-map=/tmp/go-build733252460=/tmp/go-build -gno-record-gcc-switches'
+2026-07-12T11:26:33.5692933Z GOHOSTARCH='amd64'
+2026-07-12T11:26:33.5693332Z GOHOSTOS='linux'
+2026-07-12T11:26:33.5693702Z GOINSECURE=''
+2026-07-12T11:26:33.5694161Z GOMOD='/home/runner/work/bgx/bgx/go.mod'
+2026-07-12T11:26:33.5694739Z GOMODCACHE='/home/runner/go/pkg/mod'
+2026-07-12T11:26:33.5695199Z GONOPROXY=''
+2026-07-12T11:26:33.5695524Z GONOSUMDB=''
+2026-07-12T11:26:33.5695844Z GOOS='linux'
+2026-07-12T11:26:33.5696184Z GOPATH='/home/runner/go'
+2026-07-12T11:26:33.5696570Z GOPRIVATE=''
+2026-07-12T11:26:33.5696997Z GOPROXY='https://proxy.golang.org,direct'
+2026-07-12T11:26:33.5697545Z GOROOT='/opt/hostedtoolcache/go/1.26.0/x64'
+2026-07-12T11:26:33.5698057Z GOSUMDB='sum.golang.org'
+2026-07-12T11:26:33.5698452Z GOTELEMETRY='local'
+2026-07-12T11:26:33.5698913Z GOTELEMETRYDIR='/home/runner/.config/go/telemetry'
+2026-07-12T11:26:33.5699665Z GOTMPDIR=''
+2026-07-12T11:26:33.5700002Z GOTOOLCHAIN='auto'
+2026-07-12T11:26:33.5700526Z GOTOOLDIR='/opt/hostedtoolcache/go/1.26.0/x64/pkg/tool/linux_amd64'
+2026-07-12T11:26:33.5701198Z GOVCS=''
+2026-07-12T11:26:33.5701520Z GOVERSION='go1.26.0'
+2026-07-12T11:26:33.5701893Z GOWORK=''
+2026-07-12T11:26:33.5702294Z PKG_CONFIG='pkg-config'
+2026-07-12T11:26:33.5702533Z 
+2026-07-12T11:26:33.5702926Z ##[endgroup]
+2026-07-12T11:26:33.5901569Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+2026-07-12T11:26:33.5902905Z ##[group]Run mlugg/setup-zig@v2
+2026-07-12T11:26:33.5903159Z with:
+2026-07-12T11:26:33.5903351Z   version: 0.15.2
+2026-07-12T11:26:33.5903556Z   use-cache: false
+2026-07-12T11:26:33.5903770Z   cache-size-limit: 2048
+2026-07-12T11:26:33.5904004Z ##[endgroup]
+2026-07-12T11:26:33.8165898Z Using tool-cache: false
+2026-07-12T11:26:33.8171184Z Fetching zig-x86_64-linux-0.15.2.tar.xz
+2026-07-12T11:26:33.9716883Z Cache hit for: setup-zig-tarball-zig-x86_64-linux-0.15.2
+2026-07-12T11:26:34.9350212Z Received 53737147 of 53737147 (100.0%), 63.6 MBs/sec
+2026-07-12T11:26:34.9354587Z Cache Size: ~51 MB (53737147 B)
+2026-07-12T11:26:34.9473860Z [command]/usr/bin/tar -xf /home/runner/work/_temp/8ae257f2-ebca-4a20-95cc-7eda29f7a806/cache.tzst -P -C /home/runner/work/bgx/bgx --use-compress-program unzstd
+2026-07-12T11:26:35.0202717Z Cache restored successfully
+2026-07-12T11:26:35.0230090Z Fetch took 1205 ms
+2026-07-12T11:26:35.0230602Z Extracting tarball zig-x86_64-linux-0.15.2.tar.xz
+2026-07-12T11:26:35.0310256Z [command]/usr/bin/tar xJ --warning=no-unknown-keyword --overwrite -C /home/runner/work/_temp/0dd67fb1-1661-415e-b71f-ca1a04b2cafc -f /home/runner/work/_temp/zig-x86_64-linux-0.15.2.tar.xz
+2026-07-12T11:26:38.7420782Z Extract took 3719 ms
+2026-07-12T11:26:38.7443676Z [command]/home/runner/work/_temp/0dd67fb1-1661-415e-b71f-ca1a04b2cafc/zig-x86_64-linux-0.15.2/zig version
+2026-07-12T11:26:38.7506237Z 0.15.2
+2026-07-12T11:26:38.7520496Z Resolved Zig version 0.15.2
+2026-07-12T11:26:38.7692863Z ##[group]Run lukka/get-cmake@latest
+2026-07-12T11:26:38.7693181Z with:
+2026-07-12T11:26:38.7693396Z   useCloudCache: true
+2026-07-12T11:26:38.7693631Z   useLocalCache: false
+2026-07-12T11:26:38.7694059Z env:
+2026-07-12T11:26:38.7694323Z   ZIG_GLOBAL_CACHE_DIR: /home/runner/work/bgx/bgx/.zig-cache
+2026-07-12T11:26:38.7694736Z   ZIG_LOCAL_CACHE_DIR: /home/runner/work/bgx/bgx/.zig-cache
+2026-07-12T11:26:38.7695067Z ##[endgroup]
+2026-07-12T11:26:38.9080239Z useCloudCache:true
+2026-07-12T11:26:38.9082131Z useLocalCache:false
+2026-07-12T11:26:38.9082616Z user defined cmake version:
+2026-07-12T11:26:38.9083128Z user defined ninja version:
+2026-07-12T11:26:38.9083644Z cmake version:latest
+2026-07-12T11:26:38.9084081Z ninja version:latest
+2026-07-12T11:26:38.9091469Z ##[group]Computing cache key from the downloads' URLs
+2026-07-12T11:26:38.9092175Z Cache key: '-1445423603'.
+2026-07-12T11:26:38.9093161Z Local install root: '/home/runner/work/_temp/-1445423603''.
+2026-07-12T11:26:38.9094376Z ##[endgroup]
+2026-07-12T11:26:38.9095637Z ##[group]Restoring from GitHub cloud cache using key '-1445423603' into '/home/runner/work/_temp/-1445423603'
+2026-07-12T11:26:39.0665163Z Cache hit for: -1445423603
+2026-07-12T11:26:40.0236416Z Received 63562134 of 63562134 (100.0%), 76.2 MBs/sec
+2026-07-12T11:26:40.0238955Z Cache Size: ~61 MB (63562134 B)
+2026-07-12T11:26:40.0285068Z [command]/usr/bin/tar -xf /home/runner/work/_temp/fd7b93a8-af48-4abf-85f4-ba77ea5497e8/cache.tzst -P -C /home/runner/work/bgx/bgx --use-compress-program unzstd
+2026-07-12T11:26:40.5984561Z Cache restored successfully
+2026-07-12T11:26:40.6016237Z Cloud cache hit.
+2026-07-12T11:26:40.6017324Z ##[endgroup]
+2026-07-12T11:26:40.6019675Z ##[group]Add CMake and Ninja to PATH
+2026-07-12T11:26:40.6020191Z CMake path: '/home/runner/work/_temp/-1445423603/cmake-4.3.4-linux-x86_64/bin/'
+2026-07-12T11:26:40.6024796Z Ninja path: '/home/runner/work/_temp/-1445423603'
+2026-07-12T11:26:40.6031773Z ##[group]Validating the installed CMake and Ninja
+2026-07-12T11:26:40.6062681Z CMake actual path is: '/home/runner/work/_temp/-1445423603/cmake-4.3.4-linux-x86_64/bin/cmake'
+2026-07-12T11:26:40.6063642Z Ninja actual path is: '/home/runner/work/_temp/-1445423603/ninja'
+2026-07-12T11:26:40.6064513Z ##[endgroup]
+2026-07-12T11:26:40.6065183Z ##[endgroup]
+2026-07-12T11:26:40.6065620Z get-cmake action execution succeeded
+2026-07-12T11:26:40.6204751Z ##[group]Run case "Linux" in
+2026-07-12T11:26:40.6205131Z [36;1mcase "Linux" in[0m
+2026-07-12T11:26:40.6205531Z [36;1m  Linux) sudo apt-get update && sudo apt-get install -y pkg-config ;;[0m
+2026-07-12T11:26:40.6206108Z [36;1m  macOS) brew list pkg-config >/dev/null 2>&1 || brew install pkg-config ;;[0m
+2026-07-12T11:26:40.6206530Z [36;1mesac[0m
+2026-07-12T11:26:40.6343901Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-07-12T11:26:40.6344296Z env:
+2026-07-12T11:26:40.6344590Z   ZIG_GLOBAL_CACHE_DIR: /home/runner/work/bgx/bgx/.zig-cache
+2026-07-12T11:26:40.6345048Z   ZIG_LOCAL_CACHE_DIR: /home/runner/work/bgx/bgx/.zig-cache
+2026-07-12T11:26:40.6345406Z ##[endgroup]
+2026-07-12T11:26:40.7298221Z Get:1 file:/etc/apt/apt-mirrors.txt Mirrorlist [144 B]
+2026-07-12T11:26:40.7551502Z Hit:2 http://azure.archive.ubuntu.com/ubuntu noble InRelease
+2026-07-12T11:26:40.7589925Z Get:3 http://azure.archive.ubuntu.com/ubuntu noble-updates InRelease [126 kB]
+2026-07-12T11:26:40.7660052Z Get:4 http://azure.archive.ubuntu.com/ubuntu noble-backports InRelease [126 kB]
+2026-07-12T11:26:40.7762716Z Get:5 http://azure.archive.ubuntu.com/ubuntu noble-security InRelease [126 kB]
+2026-07-12T11:26:40.7910307Z Get:6 https://packages.microsoft.com/repos/azure-cli noble InRelease [3564 B]
+2026-07-12T11:26:40.7963492Z Get:7 https://packages.microsoft.com/ubuntu/24.04/prod noble InRelease [3600 B]
+2026-07-12T11:26:40.8731805Z Get:8 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages [1092 kB]
+2026-07-12T11:26:40.8893075Z Get:9 http://azure.archive.ubuntu.com/ubuntu noble-updates/main Translation-en [269 kB]
+2026-07-12T11:26:40.8916132Z Get:10 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 Components [181 kB]
+2026-07-12T11:26:40.9020887Z Get:11 http://azure.archive.ubuntu.com/ubuntu noble-updates/universe amd64 Packages [1660 kB]
+2026-07-12T11:26:40.9119315Z Get:17 https://dl.google.com/linux/chrome-stable/deb stable InRelease [1825 B]
+2026-07-12T11:26:40.9170000Z Get:12 http://azure.archive.ubuntu.com/ubuntu noble-updates/universe Translation-en [327 kB]
+2026-07-12T11:26:40.9172109Z Get:13 http://azure.archive.ubuntu.com/ubuntu noble-updates/universe amd64 Components [388 kB]
+2026-07-12T11:26:40.9200373Z Get:14 http://azure.archive.ubuntu.com/ubuntu noble-updates/restricted amd64 Packages [1225 kB]
+2026-07-12T11:26:40.9550066Z Get:15 http://azure.archive.ubuntu.com/ubuntu noble-updates/restricted Translation-en [276 kB]
+2026-07-12T11:26:40.9638224Z Get:16 http://azure.archive.ubuntu.com/ubuntu noble-updates/multiverse amd64 Components [940 B]
+2026-07-12T11:26:40.9650201Z Get:18 http://azure.archive.ubuntu.com/ubuntu noble-backports/main amd64 Components [5744 B]
+2026-07-12T11:26:41.0120459Z Get:19 http://azure.archive.ubuntu.com/ubuntu noble-backports/universe amd64 Components [10.5 kB]
+2026-07-12T11:26:41.0350179Z Get:20 http://azure.archive.ubuntu.com/ubuntu noble-security/main amd64 Packages [827 kB]
+2026-07-12T11:26:41.0466759Z Get:21 http://azure.archive.ubuntu.com/ubuntu noble-security/main Translation-en [187 kB]
+2026-07-12T11:26:41.0480555Z Get:22 http://azure.archive.ubuntu.com/ubuntu noble-security/main amd64 Components [44.8 kB]
+2026-07-12T11:26:41.0501683Z Get:23 http://azure.archive.ubuntu.com/ubuntu noble-security/main amd64 c-n-f Metadata [11.9 kB]
+2026-07-12T11:26:41.0521715Z Get:24 http://azure.archive.ubuntu.com/ubuntu noble-security/universe amd64 Packages [1174 kB]
+2026-07-12T11:26:41.0613129Z Get:25 http://azure.archive.ubuntu.com/ubuntu noble-security/universe Translation-en [231 kB]
+2026-07-12T11:26:41.0680208Z Get:26 http://azure.archive.ubuntu.com/ubuntu noble-security/universe amd64 Components [76.3 kB]
+2026-07-12T11:26:41.0685239Z Get:27 http://azure.archive.ubuntu.com/ubuntu noble-security/universe amd64 c-n-f Metadata [24.2 kB]
+2026-07-12T11:26:41.0934452Z Get:28 https://packages.microsoft.com/repos/azure-cli noble/main amd64 Packages [2314 B]
+2026-07-12T11:26:41.1572199Z Get:29 https://packages.microsoft.com/ubuntu/24.04/prod noble/main armhf Packages [11.6 kB]
+2026-07-12T11:26:41.1625912Z Get:30 https://packages.microsoft.com/ubuntu/24.04/prod noble/main arm64 Packages [181 kB]
+2026-07-12T11:26:41.1670037Z Get:31 https://packages.microsoft.com/ubuntu/24.04/prod noble/main amd64 Packages [214 kB]
+2026-07-12T11:26:41.3098471Z Get:32 https://dl.google.com/linux/chrome-stable/deb stable/main amd64 Packages [1216 B]
+2026-07-12T11:26:45.5908281Z Fetched 8808 kB in 1s (8009 kB/s)
+2026-07-12T11:26:46.2390356Z Reading package lists...
+2026-07-12T11:26:46.2700862Z Reading package lists...
+2026-07-12T11:26:46.4072419Z Building dependency tree...
+2026-07-12T11:26:46.4079443Z Reading state information...
+2026-07-12T11:26:46.5524507Z pkg-config is already the newest version (1.8.1-2build1).
+2026-07-12T11:26:46.5525274Z 0 upgraded, 0 newly installed, 0 to remove and 38 not upgraded.
+2026-07-12T11:26:46.6168782Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+2026-07-12T11:26:46.6170543Z ##[group]Run actions/cache@v4
+2026-07-12T11:26:46.6170804Z with:
+2026-07-12T11:26:46.6171038Z   path: /home/runner/work/_temp/libghostty
+2026-07-12T11:26:46.6171578Z   key: libghostty-v2-Linux-X64-5bde2d0ac4642f496b6c01f7f3a759b09e100d7f40364475db2c9ffdffe13560
+2026-07-12T11:26:46.6172111Z   enableCrossOsArchive: false
+2026-07-12T11:26:46.6172385Z   fail-on-cache-miss: false
+2026-07-12T11:26:46.6172632Z   lookup-only: false
+2026-07-12T11:26:46.6172863Z   save-always: false
+2026-07-12T11:26:46.6173069Z env:
+2026-07-12T11:26:46.6173329Z   ZIG_GLOBAL_CACHE_DIR: /home/runner/work/bgx/bgx/.zig-cache
+2026-07-12T11:26:46.6173788Z   ZIG_LOCAL_CACHE_DIR: /home/runner/work/bgx/bgx/.zig-cache
+2026-07-12T11:26:46.6174332Z ##[endgroup]
+2026-07-12T11:26:46.7213175Z (node:2817) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-07-12T11:26:46.7214121Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-07-12T11:26:46.8482354Z Cache not found for input keys: libghostty-v2-Linux-X64-5bde2d0ac4642f496b6c01f7f3a759b09e100d7f40364475db2c9ffdffe13560
+2026-07-12T11:26:46.8559614Z ##[group]Run work="$RUNNER_TEMP/libghostty"
+2026-07-12T11:26:46.8560058Z [36;1mwork="$RUNNER_TEMP/libghostty"[0m
+2026-07-12T11:26:46.8560392Z [36;1mif [ ! -d "$work/build" ]; then[0m
+2026-07-12T11:26:46.8560751Z [36;1m  go mod download go.mitchellh.com/libghostty[0m
+2026-07-12T11:26:46.8561182Z [36;1m  src="$(go list -m -f '{{.Dir}}' go.mitchellh.com/libghostty)"[0m
+2026-07-12T11:26:46.8561582Z [36;1m  cp -R "$src" "$work"[0m
+2026-07-12T11:26:46.8561862Z [36;1m  chmod -R u+w "$work"[0m
+2026-07-12T11:26:46.8562238Z [36;1m  cmake -S "$work" -B "$work/build" -DCMAKE_BUILD_TYPE=Release \[0m
+2026-07-12T11:26:46.8562723Z [36;1m    -DGHOSTTY_VT_CROSS_TARGETS="linux-amd64=x86_64-linux-gnu"[0m
+2026-07-12T11:26:46.8563216Z [36;1m  cmake --build "$work/build" --target "zig_build_lib_vt_linux-amd64"[0m
+2026-07-12T11:26:46.8563617Z [36;1mfi[0m
+2026-07-12T11:26:46.8563873Z [36;1mprefix="$work/build/ghostty-linux-amd64"[0m
+2026-07-12T11:26:46.8564356Z [36;1m# zig bakes an absolute install prefix into the generated pkg-config[0m
+2026-07-12T11:26:46.8564880Z [36;1m# files. A restored zig build cache can carry over a prefix from an[0m
+2026-07-12T11:26:46.8565395Z [36;1m# earlier build layout, leaving the static .pc pointing at an archive[0m
+2026-07-12T11:26:46.8565896Z [36;1m# path that does not exist and breaking the cgo link. Pin each .pc[0m
+2026-07-12T11:26:46.8566373Z [36;1m# prefix to where the cross-target artifacts actually landed.[0m
+2026-07-12T11:26:46.8566802Z [36;1mfor pc in "$prefix"/share/pkgconfig/*.pc; do[0m
+2026-07-12T11:26:46.8567139Z [36;1m  tmp="$(mktemp)"[0m
+2026-07-12T11:26:46.8567447Z [36;1m  sed "s|^prefix=.*|prefix=$prefix|" "$pc" >"$tmp"[0m
+2026-07-12T11:26:46.8567773Z [36;1m  mv "$tmp" "$pc"[0m
+2026-07-12T11:26:46.8568010Z [36;1mdone[0m
+2026-07-12T11:26:46.8568349Z [36;1mprintf 'PKG_CONFIG_PATH=%s/share/pkgconfig\n' "$prefix" >> "$GITHUB_ENV"[0m
+2026-07-12T11:26:46.8601913Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-07-12T11:26:46.8602290Z env:
+2026-07-12T11:26:46.8602564Z   ZIG_GLOBAL_CACHE_DIR: /home/runner/work/bgx/bgx/.zig-cache
+2026-07-12T11:26:46.8602975Z   ZIG_LOCAL_CACHE_DIR: /home/runner/work/bgx/bgx/.zig-cache
+2026-07-12T11:26:46.8603310Z ##[endgroup]
+2026-07-12T11:26:46.9846254Z -- The C compiler identification is GNU 13.3.0
+2026-07-12T11:26:46.9935226Z -- Detecting C compiler ABI info
+2026-07-12T11:26:47.0688833Z -- Detecting C compiler ABI info - done
+2026-07-12T11:26:47.0943141Z -- Check for working C compiler: /usr/bin/cc - skipped
+2026-07-12T11:26:47.0943842Z -- Detecting C compile features
+2026-07-12T11:26:47.0947632Z -- Detecting C compile features - done
+2026-07-12T11:26:52.7041352Z -- Found zig: /home/runner/work/_temp/0dd67fb1-1661-415e-b71f-ca1a04b2cafc/zig-x86_64-linux-0.15.2/zig
+2026-07-12T11:26:52.7088660Z -- Configuring done (5.8s)
+2026-07-12T11:26:52.7125920Z -- Generating done (0.0s)
+2026-07-12T11:26:52.7130256Z -- Build files have been written to: /home/runner/work/_temp/libghostty/build
+2026-07-12T11:26:52.7333875Z [100%] Building libghostty-vt for x86_64-linux-gnu...
+2026-07-12T11:28:43.0763732Z [100%] Built target zig_build_lib_vt_linux-amd64
+2026-07-12T11:28:43.0911772Z ##[group]Run work="$RUNNER_TEMP/libghostty"
+2026-07-12T11:28:43.0912166Z [36;1mwork="$RUNNER_TEMP/libghostty"[0m
+2026-07-12T11:28:43.0912511Z [36;1mprefix="$work/build/ghostty-linux-amd64"[0m
+2026-07-12T11:28:43.0912890Z [36;1mecho "PKG_CONFIG_PATH=$PKG_CONFIG_PATH"[0m
+2026-07-12T11:28:43.0913241Z [36;1mecho "=== all .pc files under build ==="[0m
+2026-07-12T11:28:43.0913819Z [36;1mfind "$work/build" -name '*.pc' | while read -r f; do[0m
+2026-07-12T11:28:43.0914173Z [36;1m  echo "----- $f"[0m
+2026-07-12T11:28:43.0914415Z [36;1m  cat "$f"[0m
+2026-07-12T11:28:43.0914640Z [36;1m  echo[0m
+2026-07-12T11:28:43.0914841Z [36;1mdone[0m
+2026-07-12T11:28:43.0915105Z [36;1mecho "=== all libghostty-vt.a under build ==="[0m
+2026-07-12T11:28:43.0915482Z [36;1mfind "$work/build" -name 'libghostty-vt.a'[0m
+2026-07-12T11:28:43.0915905Z [36;1mecho "=== pkg-config --libs --static libghostty-vt-static ==="[0m
+2026-07-12T11:28:43.0916407Z [36;1mpkg-config --libs --static libghostty-vt-static || true[0m
+2026-07-12T11:28:43.0916799Z [36;1mecho "=== pkg-config path used ==="[0m
+2026-07-12T11:28:43.0917496Z [36;1mpkg-config --debug --libs --static libghostty-vt-static 2>&1 | grep -iE "Reading|Parsing|Adding.*pkgconfig|Path position" | head -20 || true[0m
+2026-07-12T11:28:43.0950179Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-07-12T11:28:43.0950552Z env:
+2026-07-12T11:28:43.0950838Z   ZIG_GLOBAL_CACHE_DIR: /home/runner/work/bgx/bgx/.zig-cache
+2026-07-12T11:28:43.0951259Z   ZIG_LOCAL_CACHE_DIR: /home/runner/work/bgx/bgx/.zig-cache
+2026-07-12T11:28:43.0951802Z   PKG_CONFIG_PATH: /home/runner/work/_temp/libghostty/build/ghostty-linux-amd64/share/pkgconfig
+2026-07-12T11:28:43.0952274Z ##[endgroup]
+2026-07-12T11:28:43.1004249Z PKG_CONFIG_PATH=/home/runner/work/_temp/libghostty/build/ghostty-linux-amd64/share/pkgconfig
+2026-07-12T11:28:43.1005315Z === all .pc files under build ===
+2026-07-12T11:28:43.1151763Z ----- /home/runner/work/_temp/libghostty/build/ghostty-linux-amd64/share/pkgconfig/libghostty-vt.pc
+2026-07-12T11:28:43.1162765Z prefix=/home/runner/work/_temp/libghostty/build/ghostty-linux-amd64
+2026-07-12T11:28:43.1163519Z includedir=${prefix}/include
+2026-07-12T11:28:43.1163951Z libdir=${prefix}/lib
+2026-07-12T11:28:43.1164206Z 
+2026-07-12T11:28:43.1164383Z Name: libghostty-vt
+2026-07-12T11:28:43.1164858Z URL: https://github.com/ghostty-org/ghostty
+2026-07-12T11:28:43.1165426Z Description: Ghostty VT library
+2026-07-12T11:28:43.1165797Z Version: 0.1.0-dev
+2026-07-12T11:28:43.1166031Z Cflags: -I${includedir}
+2026-07-12T11:28:43.1166297Z Libs: -L${libdir} -lghostty-vt
+2026-07-12T11:28:43.1166562Z Libs.private: 
+2026-07-12T11:28:43.1166790Z Requires.private: 
+2026-07-12T11:28:43.1167299Z ----- /home/runner/work/_temp/libghostty/build/ghostty-linux-amd64/share/pkgconfig/libghostty-vt-static.pc
+2026-07-12T11:28:43.1174235Z prefix=/home/runner/work/_temp/libghostty/build/ghostty-linux-amd64
+2026-07-12T11:28:43.1174688Z includedir=${prefix}/include
+2026-07-12T11:28:43.1175195Z libdir=${prefix}/lib
+2026-07-12T11:28:43.1175460Z 
+2026-07-12T11:28:43.1175661Z Name: libghostty-vt-static
+2026-07-12T11:28:43.1176193Z URL: https://github.com/ghostty-org/ghostty
+2026-07-12T11:28:43.1176793Z Description: Ghostty VT library (static)
+2026-07-12T11:28:43.1177320Z Version: 0.1.0-dev
+2026-07-12T11:28:43.1177636Z Cflags: -I${includedir}
+2026-07-12T11:28:43.1177941Z Libs: ${libdir}/libghostty-vt.a
+2026-07-12T11:28:43.1178413Z Libs.private: 
+2026-07-12T11:28:43.1178797Z Requires.private: 
+2026-07-12T11:28:43.1179479Z === all libghostty-vt.a under build ===
+2026-07-12T11:28:43.1296402Z /home/runner/work/_temp/libghostty/build/ghostty-linux-amd64/lib/libghostty-vt.a
+2026-07-12T11:28:43.1298957Z === pkg-config --libs --static libghostty-vt-static ===
+2026-07-12T11:28:43.1308691Z /home/runner/work/_temp/libghostty/build/ghostty-linux-amd64/lib/libghostty-vt.a 
+2026-07-12T11:28:43.1310531Z === pkg-config path used ===
+2026-07-12T11:28:43.1328503Z libpkgconf/tuple.c:189 [pkgconf_tuple_add]: adding tuple to @0x5596bc95a6c8: pcfiledir => /home/runner/work/_temp/libghostty/build/ghostty-linux-amd64/share/pkgconfig (parsed? 1)
+2026-07-12T11:28:43.1354926Z ##[group]Run go test $(go list ./... | grep -v '/e2e$')
+2026-07-12T11:28:43.1355364Z [36;1mgo test $(go list ./... | grep -v '/e2e$')[0m
+2026-07-12T11:28:43.1384832Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-07-12T11:28:43.1385343Z env:
+2026-07-12T11:28:43.1385626Z   ZIG_GLOBAL_CACHE_DIR: /home/runner/work/bgx/bgx/.zig-cache
+2026-07-12T11:28:43.1386044Z   ZIG_LOCAL_CACHE_DIR: /home/runner/work/bgx/bgx/.zig-cache
+2026-07-12T11:28:43.1386578Z   PKG_CONFIG_PATH: /home/runner/work/_temp/libghostty/build/ghostty-linux-amd64/share/pkgconfig
+2026-07-12T11:28:43.1387046Z ##[endgroup]
+2026-07-12T11:28:43.3357622Z ok  	github.com/sidedotdev/bgx	(cached)
+2026-07-12T11:28:45.5966699Z ok  	github.com/sidedotdev/bgx/daemon	1.933s
+2026-07-12T11:28:45.5967399Z ok  	github.com/sidedotdev/bgx/scrollback	(cached)
+2026-07-12T11:28:45.5968033Z ok  	github.com/sidedotdev/bgx/vt	(cached)
+2026-07-12T11:28:45.5968656Z ok  	github.com/sidedotdev/bgx/vtscan	(cached)
+2026-07-12T11:28:45.6089692Z ##[group]Run mkdir -p dist
+2026-07-12T11:28:45.6090034Z [36;1mmkdir -p dist[0m
+2026-07-12T11:28:45.6090333Z [36;1mgo build -o "dist/bgx-linux-amd64" .[0m
+2026-07-12T11:28:45.6121967Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-07-12T11:28:45.6122341Z env:
+2026-07-12T11:28:45.6122619Z   ZIG_GLOBAL_CACHE_DIR: /home/runner/work/bgx/bgx/.zig-cache
+2026-07-12T11:28:45.6123017Z   ZIG_LOCAL_CACHE_DIR: /home/runner/work/bgx/bgx/.zig-cache
+2026-07-12T11:28:45.6123553Z   PKG_CONFIG_PATH: /home/runner/work/_temp/libghostty/build/ghostty-linux-amd64/share/pkgconfig
+2026-07-12T11:28:45.6124029Z   GOOS: linux
+2026-07-12T11:28:45.6124240Z   GOARCH: amd64
+2026-07-12T11:28:45.6124447Z ##[endgroup]
+2026-07-12T11:28:46.6545398Z ##[group]Run go test ./e2e/...
+2026-07-12T11:28:46.6545951Z [36;1mgo test ./e2e/...[0m
+2026-07-12T11:28:46.6593759Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-07-12T11:28:46.6594358Z env:
+2026-07-12T11:28:46.6594817Z   ZIG_GLOBAL_CACHE_DIR: /home/runner/work/bgx/bgx/.zig-cache
+2026-07-12T11:28:46.6595501Z   ZIG_LOCAL_CACHE_DIR: /home/runner/work/bgx/bgx/.zig-cache
+2026-07-12T11:28:46.6596445Z   PKG_CONFIG_PATH: /home/runner/work/_temp/libghostty/build/ghostty-linux-amd64/share/pkgconfig
+2026-07-12T11:28:46.6597458Z   BGX_E2E_BIN: /home/runner/work/bgx/bgx/dist/bgx-linux-amd64
+2026-07-12T11:28:46.6598065Z ##[endgroup]
+2026-07-12T11:28:50.6542218Z ok  	github.com/sidedotdev/bgx/e2e	3.838s
+2026-07-12T11:28:50.6655714Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+2026-07-12T11:28:50.6658065Z ##[group]Run actions/upload-artifact@v4
+2026-07-12T11:28:50.6658570Z with:
+2026-07-12T11:28:50.6658933Z   name: bgx-linux-amd64
+2026-07-12T11:28:50.6659653Z   path: dist/*
+2026-07-12T11:28:50.6660037Z   if-no-files-found: warn
+2026-07-12T11:28:50.6660457Z   compression-level: 6
+2026-07-12T11:28:50.6660859Z   overwrite: false
+2026-07-12T11:28:50.6661276Z   include-hidden-files: false
+2026-07-12T11:28:50.6661721Z env:
+2026-07-12T11:28:50.6662209Z   ZIG_GLOBAL_CACHE_DIR: /home/runner/work/bgx/bgx/.zig-cache
+2026-07-12T11:28:50.6662949Z   ZIG_LOCAL_CACHE_DIR: /home/runner/work/bgx/bgx/.zig-cache
+2026-07-12T11:28:50.6663926Z   PKG_CONFIG_PATH: /home/runner/work/_temp/libghostty/build/ghostty-linux-amd64/share/pkgconfig
+2026-07-12T11:28:50.6664763Z ##[endgroup]
+2026-07-12T11:28:50.8312258Z (node:4860) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-07-12T11:28:50.8313210Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-07-12T11:28:50.8380706Z With the provided path, there will be 1 file uploaded
+2026-07-12T11:28:50.8381929Z Artifact name is valid!
+2026-07-12T11:28:50.8382431Z Root directory input is valid!
+2026-07-12T11:28:51.0395612Z Beginning upload of artifact content to blob storage
+2026-07-12T11:28:51.4264573Z (node:4860) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+2026-07-12T11:28:51.8928167Z Uploaded bytes 6604197
+2026-07-12T11:28:51.9328732Z Finished uploading artifact content to blob storage!
+2026-07-12T11:28:51.9330118Z SHA256 digest of uploaded artifact zip is 8704353b52242eb7eff823b3afb815cf279bfe77fc2c05b8ea30f99c8eb8d3bf
+2026-07-12T11:28:51.9332264Z Finalizing artifact upload
+2026-07-12T11:28:52.1089598Z Artifact bgx-linux-amd64.zip successfully finalized. Artifact ID 8259471803
+2026-07-12T11:28:52.1091129Z Artifact bgx-linux-amd64 has been successfully uploaded! Final size is 6604197 bytes. Artifact ID is 8259471803
+2026-07-12T11:28:52.1097014Z Artifact download URL: https://github.com/sidedotdev/bgx/actions/runs/29190822621/artifacts/8259471803
+2026-07-12T11:28:52.1803613Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+2026-07-12T11:28:52.1804962Z Post job cleanup.
+2026-07-12T11:28:52.2846746Z (node:4883) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-07-12T11:28:52.2847778Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-07-12T11:28:52.3067916Z [command]/usr/bin/tar --posix -cf cache.tzst --exclude cache.tzst -P -C /home/runner/work/bgx/bgx --files-from manifest.txt --use-compress-program zstdmt
+2026-07-12T11:28:52.9877462Z (node:4883) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+2026-07-12T11:28:53.9794539Z Sent 55246848 of 116697029 (47.3%), 52.7 MBs/sec
+2026-07-12T11:28:54.9795884Z Sent 114819072 of 116697029 (98.4%), 54.8 MBs/sec
+2026-07-12T11:28:55.3395116Z Sent 116697029 of 116697029 (100.0%), 47.2 MBs/sec
+2026-07-12T11:28:55.4179733Z Cache saved with key: libghostty-v2-Linux-X64-5bde2d0ac4642f496b6c01f7f3a759b09e100d7f40364475db2c9ffdffe13560
+2026-07-12T11:28:55.4311987Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+2026-07-12T11:28:55.4313315Z Post job cleanup.
+2026-07-12T11:28:55.6791248Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+2026-07-12T11:28:55.6793909Z Post job cleanup.
+2026-07-12T11:28:55.7997483Z (node:4911) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-07-12T11:28:55.7999293Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-07-12T11:28:55.8084967Z [command]/opt/hostedtoolcache/go/1.26.0/x64/bin/go env GOMODCACHE
+2026-07-12T11:28:55.8146003Z [command]/opt/hostedtoolcache/go/1.26.0/x64/bin/go env GOCACHE
+2026-07-12T11:28:55.8157124Z /home/runner/go/pkg/mod
+2026-07-12T11:28:55.8178455Z /home/runner/.cache/go-build
+2026-07-12T11:28:55.8185997Z Cache hit occurred on the primary key setup-go-Linux-x64-ubuntu24-go-1.26.0-5bde2d0ac4642f496b6c01f7f3a759b09e100d7f40364475db2c9ffdffe13560, not saving cache.
+2026-07-12T11:28:55.8346093Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+2026-07-12T11:28:55.8348508Z Post job cleanup.
+2026-07-12T11:28:55.9264611Z [command]/usr/bin/git version
+2026-07-12T11:28:55.9308513Z git version 2.54.0
+2026-07-12T11:28:55.9352198Z Temporarily overriding HOME='/home/runner/work/_temp/c036b8db-1f93-4107-8e6a-d0c0d9e1480d' before making global git config changes
+2026-07-12T11:28:55.9353614Z Adding repository directory to the temporary git global config as a safe directory
+2026-07-12T11:28:55.9357757Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/bgx/bgx
+2026-07-12T11:28:55.9398319Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-07-12T11:28:55.9435520Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-07-12T11:28:55.9727556Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-07-12T11:28:55.9755045Z http.https://github.com/.extraheader
+2026-07-12T11:28:55.9766964Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+2026-07-12T11:28:55.9806273Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-07-12T11:28:56.0058250Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-07-12T11:28:56.0093936Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-07-12T11:28:56.0480731Z Cleaning up orphan processes
+2026-07-12T11:28:56.0796682Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/cache@v4, actions/checkout@v4, actions/setup-go@v5, actions/upload-artifact@v4, mlugg/setup-zig@v2. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
