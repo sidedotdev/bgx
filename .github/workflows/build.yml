@@ -111,6 +111,25 @@ jobs:
           done
           printf 'PKG_CONFIG_PATH=%s/share/pkgconfig\n' "$prefix" >> "$GITHUB_ENV"
 
+      - name: debug pkg-config
+        shell: bash
+        run: |
+          work="$RUNNER_TEMP/libghostty"
+          prefix="$work/build/ghostty-${{ matrix.vt }}"
+          echo "which pkg-config: $(command -v pkg-config)"
+          echo "PKG_CONFIG_PATH=[$PKG_CONFIG_PATH]"
+          echo "PKG_CONFIG_LIBDIR=[${PKG_CONFIG_LIBDIR:-}]"
+          echo "=== every libghostty-vt-static.pc on disk ==="
+          find / -name 'libghostty-vt-static.pc' 2>/dev/null | while read -r f; do
+            echo "----- $f"; cat "$f"; echo
+          done
+          echo "=== every libghostty-vt.a on disk ==="
+          find / -name 'libghostty-vt.a' 2>/dev/null
+          echo "=== pkg-config --libs --static ==="
+          pkg-config --libs --static libghostty-vt-static || true
+          echo "=== pkg-config --debug (which file is read) ==="
+          pkg-config --debug --libs --static libghostty-vt-static 2>&1 | grep -iE "Reading|Parsing|Adding|Path position|Looking|matched" | head -40 || true
+
       # Unit tests run against the packages directly; the black-box suite runs
       # separately below against the uploaded static binary.
       - name: unit tests
