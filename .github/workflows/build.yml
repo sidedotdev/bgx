@@ -49,6 +49,11 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          # Do not restore zig's global build cache across runs. A cache from a
+          # different libghostty build layout carries over pkg-config content
+          # that bakes zig's default install prefix, so a reused cache makes the
+          # generated .pc point at a static archive path that does not exist.
+          use-cache: false
 
       - uses: lukka/get-cmake@latest
 
@@ -68,7 +73,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/libghostty
-          key: libghostty-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
+          key: libghostty-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
 
       # The module cache is read-only, so build in a writable copy and point
       # pkg-config at the generated .pc file for the build and test steps. A
