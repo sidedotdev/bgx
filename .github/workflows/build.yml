@@ -93,7 +93,18 @@ jobs:
               -DGHOSTTY_VT_CROSS_TARGETS="${{ matrix.vt }}=${{ matrix.zig }}"
             cmake --build "$work/build" --target "zig_build_lib_vt_${{ matrix.vt }}"
           fi
-          printf 'PKG_CONFIG_PATH=%s/build/ghostty-%s/share/pkgconfig\n' "$work" "${{ matrix.vt }}" >> "$GITHUB_ENV"
+          prefix="$work/build/ghostty-${{ matrix.vt }}"
+          # zig bakes an absolute install prefix into the generated pkg-config
+          # files. A restored zig build cache can carry over a prefix from an
+          # earlier build layout, leaving the static .pc pointing at an archive
+          # path that does not exist and breaking the cgo link. Pin each .pc
+          # prefix to where the cross-target artifacts actually landed.
+          for pc in "$prefix"/share/pkgconfig/*.pc; do
+            tmp="$(mktemp)"
+            sed "s|^prefix=.*|prefix=$prefix|" "$pc" >"$tmp"
+            mv "$tmp" "$pc"
+          done
+          printf 'PKG_CONFIG_PATH=%s/share/pkgconfig\n' "$prefix" >> "$GITHUB_ENV"
 
       # Unit tests run against the packages directly; the black-box suite runs
       # separately below against the uploaded static binary.
