@@ -45,6 +45,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          # Do not restore go's build cache across runs. cgo resolves the
+          # libghostty archive path via pkg-config at build time, but go's cache
+          # key does not include PKG_CONFIG_PATH, so a package compiled against a
+          # stale .pc (pointing at zig's default zig-out layout) would be reused
+          # even after the .pc is corrected, breaking the link nondeterministically.
+          cache: false
 
       - uses: mlugg/setup-zig@v2
         with:
