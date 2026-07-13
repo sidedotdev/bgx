@@ -162,9 +162,17 @@ jobs:
           # links statically, yielding a self-contained cli binary.
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           mkdir -p dist
-          go build -o "dist/bgx-${{ matrix.goos }}-${{ matrix.goarch }}" .
+          # Stamp the release version on tag builds so `bgx version` reports the
+          # shipped tag rather than the in-source dev placeholder.
+          ldflags=""
+          if [ "$REF_TYPE" = tag ]; then
+            ldflags="-X main.version=${REF_NAME#v}"
+          fi
+          go build -ldflags "$ldflags" -o "dist/bgx-${{ matrix.goos }}-${{ matrix.goarch }}" .
 
       # Run the full black-box suite against the exact static binary that gets
       # uploaded, verifying the release artifact itself end to end.
