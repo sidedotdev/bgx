@@ -34,7 +34,7 @@ jobs:
             goarch: arm64
             vt: macos-arm64
             zig: aarch64-macos
-          - runner: macos-13
+          - runner: macos-15-intel
             goos: darwin
             goarch: amd64
             vt: macos-amd64
@@ -45,10 +45,21 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          # Do not restore go's build cache across runs. cgo resolves the
+          # libghostty archive path via pkg-config at build time, but go's cache
+          # key does not include PKG_CONFIG_PATH, so a package compiled against a
+          # stale .pc (pointing at zig's default zig-out layout) would be reused
+          # even after the .pc is corrected, breaking the link nondeterministically.
+          cache: false
 
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
+          # Do not restore zig's global build cache across runs. A cache from a
+          # different libghostty build layout carries over pkg-config content
+          # that bakes zig's default install prefix, so a reused cache makes the
+          # generated .pc point at a static archive path that does not exist.
+          use-cache: false
 
       - uses: lukka/get-cmake@latest
 
@@ -68,7 +79,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/libghostty
-          key: libghostty-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
+          key: libghostty-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
 
       # The module cache is read-only, so build in a writable copy and point
       # pkg-config at the generated .pc file for the build and test steps. A
@@ -93,7 +104,47 @@ jobs:
               -DGHOSTTY_VT_CROSS_TARGETS="${{ matrix.vt }}=${{ matrix.zig }}"
             cmake --build "$work/build" --target "zig_build_lib_vt_${{ matrix.vt }}"
           fi
-          printf 'PKG_CONFIG_PATH=%s/build/ghostty-%s/share/pkgconfig\n' "$work" "${{ matrix.vt }}" >> "$GITHUB_ENV"
+          prefix="$work/build/ghostty-${{ matrix.vt }}"
+          archive="$prefix/lib/libghostty-vt.a"
+          src="$prefix/share/pkgconfig/libghostty-vt-static.pc"
+          for f in "$archive" "$src"; do
+            if [ ! -f "$f" ]; then
+              echo "expected build output missing: $f" >&2
+              find "$work/build" -name "$(basename "$f")" >&2 || true
+              exit 1
+            fi
+          done
+          # zig bakes absolute install paths into the generated .pc files and,
+          # depending on build cache state, nondeterministically emits paths under
+          # its default zig-out layout rather than the cross install dir, which
+          # breaks the cgo link. Do not trust those paths: rewrite the .pc so the
+          # location vars and the static archive resolve to where the artifacts
+          # actually landed, and confine pkg-config to a dedicated directory via
+          # PKG_CONFIG_LIBDIR so no stray generated .pc can be resolved instead.
+          pcdir="$work/pkgconfig"
+          rm -rf "$pcdir"
+          mkdir -p "$pcdir"
+          {
+            echo "prefix=$prefix"
+            echo "includedir=$prefix/include"
+            echo "libdir=$prefix/lib"
+            grep -vE '^(prefix|includedir|libdir)=' "$src" \
+              | sed -E "s#[^[:space:]]*/libghostty-vt\.a#$archive#g"
+          } >"$pcdir/libghostty-vt-static.pc"
+          # Fail loudly and early if resolution still does not point at the real
+          # archive, rather than surfacing later as an opaque link error.
+          resolved="$(PKG_CONFIG_PATH="$pcdir" PKG_CONFIG_LIBDIR="$pcdir" \
+            pkg-config --libs --static libghostty-vt-static)"
+          case "$resolved" in
+            *"$archive"*) : ;;
+            *) echo "pkg-config did not resolve $archive: [$resolved]" >&2
+               cat "$pcdir"/*.pc >&2
+               exit 1 ;;
+          esac
+          {
+            printf 'PKG_CONFIG_PATH=%s\n' "$pcdir"
+            printf 'PKG_CONFIG_LIBDIR=%s\n' "$pcdir"
+          } >> "$GITHUB_ENV"
 
       # Unit tests run against the packages directly; the black-box suite runs
       # separately below against the uploaded static binary.
@@ -111,9 +162,17 @@ jobs:
           # links statically, yielding a self-contained cli binary.
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           mkdir -p dist
-          go build -o "dist/bgx-${{ matrix.goos }}-${{ matrix.goarch }}" .
+          # Stamp the release version on tag builds so `bgx version` reports the
+          # shipped tag rather than the in-source dev placeholder.
+          ldflags=""
+          if [ "$REF_TYPE" = tag ]; then
+            ldflags="-X main.version=${REF_NAME#v}"
+          fi
+          go build -ldflags "$ldflags" -o "dist/bgx-${{ matrix.goos }}-${{ matrix.goarch }}" .
 
       # Run the full black-box suite against the exact static binary that gets
       # uploaded, verifying the release artifact itself end to end.
