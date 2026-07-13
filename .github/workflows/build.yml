@@ -100,24 +100,41 @@ jobs:
           fi
           prefix="$work/build/ghostty-${{ matrix.vt }}"
           archive="$prefix/lib/libghostty-vt.a"
-          if [ ! -f "$archive" ]; then
-            echo "expected static archive missing: $archive" >&2
-            find "$work/build" -name 'libghostty-vt.a' >&2 || true
-            exit 1
-          fi
-          # zig bakes an absolute install prefix into the generated .pc files and,
-          # depending on build cache state, can leave that prefix pointing at its
-          # default zig-out layout rather than the cross install dir. Copy the
-          # generated .pc files into a dedicated directory with the prefix pinned
-          # to where the artifacts actually landed, then confine pkg-config to it
-          # via PKG_CONFIG_LIBDIR so no stray generated .pc (such as a copy left
-          # in a zig cache) can be resolved instead.
+          src="$prefix/share/pkgconfig/libghostty-vt-static.pc"
+          for f in "$archive" "$src"; do
+            if [ ! -f "$f" ]; then
+              echo "expected build output missing: $f" >&2
+              find "$work/build" -name "$(basename "$f")" >&2 || true
+              exit 1
+            fi
+          done
+          # zig bakes absolute install paths into the generated .pc files and,
+          # depending on build cache state, nondeterministically emits paths under
+          # its default zig-out layout rather than the cross install dir, which
+          # breaks the cgo link. Do not trust those paths: rewrite the .pc so the
+          # location vars and the static archive resolve to where the artifacts
+          # actually landed, and confine pkg-config to a dedicated directory via
+          # PKG_CONFIG_LIBDIR so no stray generated .pc can be resolved instead.
           pcdir="$work/pkgconfig"
           rm -rf "$pcdir"
           mkdir -p "$pcdir"
-          for pc in "$prefix"/share/pkgconfig/*.pc; do
-            sed "s|^prefix=.*|prefix=$prefix|" "$pc" >"$pcdir/$(basename "$pc")"
-          done
+          {
+            echo "prefix=$prefix"
+            echo "includedir=$prefix/include"
+            echo "libdir=$prefix/lib"
+            grep -vE '^(prefix|includedir|libdir)=' "$src" \
+              | sed -E "s#[^[:space:]]*/libghostty-vt\.a#$archive#g"
+          } >"$pcdir/libghostty-vt-static.pc"
+          # Fail loudly and early if resolution still does not point at the real
+          # archive, rather than surfacing later as an opaque link error.
+          resolved="$(PKG_CONFIG_PATH="$pcdir" PKG_CONFIG_LIBDIR="$pcdir" \
+            pkg-config --libs --static libghostty-vt-static)"
+          case "$resolved" in
+            *"$archive"*) : ;;
+            *) echo "pkg-config did not resolve $archive: [$resolved]" >&2
+               cat "$pcdir"/*.pc >&2
+               exit 1 ;;
+          esac
           {
             printf 'PKG_CONFIG_PATH=%s\n' "$pcdir"
             printf 'PKG_CONFIG_LIBDIR=%s\n' "$pcdir"
