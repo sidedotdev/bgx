@@ -99,36 +99,29 @@ jobs:
             cmake --build "$work/build" --target "zig_build_lib_vt_${{ matrix.vt }}"
           fi
           prefix="$work/build/ghostty-${{ matrix.vt }}"
-          # Defensively pin the generated pkg-config prefix to where the
-          # cross-target artifacts actually landed. zig bakes an absolute install
-          # prefix into these .pc files, and a mismatched prefix leaves the
-          # static .pc pointing at an archive path that does not exist, breaking
-          # the cgo link.
+          archive="$prefix/lib/libghostty-vt.a"
+          if [ ! -f "$archive" ]; then
+            echo "expected static archive missing: $archive" >&2
+            find "$work/build" -name 'libghostty-vt.a' >&2 || true
+            exit 1
+          fi
+          # zig bakes an absolute install prefix into the generated .pc files and,
+          # depending on build cache state, can leave that prefix pointing at its
+          # default zig-out layout rather than the cross install dir. Copy the
+          # generated .pc files into a dedicated directory with the prefix pinned
+          # to where the artifacts actually landed, then confine pkg-config to it
+          # via PKG_CONFIG_LIBDIR so no stray generated .pc (such as a copy left
+          # in a zig cache) can be resolved instead.
+          pcdir="$work/pkgconfig"
+          rm -rf "$pcdir"
+          mkdir -p "$pcdir"
           for pc in "$prefix"/share/pkgconfig/*.pc; do
-            tmp="$(mktemp)"
-            sed "s|^prefix=.*|prefix=$prefix|" "$pc" >"$tmp"
-            mv "$tmp" "$pc"
+            sed "s|^prefix=.*|prefix=$prefix|" "$pc" >"$pcdir/$(basename "$pc")"
           done
-          printf 'PKG_CONFIG_PATH=%s/share/pkgconfig\n' "$prefix" >> "$GITHUB_ENV"
-
-      - name: debug pkg-config
-        shell: bash
-        run: |
-          work="$RUNNER_TEMP/libghostty"
-          prefix="$work/build/ghostty-${{ matrix.vt }}"
-          echo "which pkg-config: $(command -v pkg-config)"
-          echo "PKG_CONFIG_PATH=[$PKG_CONFIG_PATH]"
-          echo "PKG_CONFIG_LIBDIR=[${PKG_CONFIG_LIBDIR:-}]"
-          echo "=== every libghostty-vt-static.pc on disk ==="
-          find / -name 'libghostty-vt-static.pc' 2>/dev/null | while read -r f; do
-            echo "----- $f"; cat "$f"; echo
-          done
-          echo "=== every libghostty-vt.a on disk ==="
-          find / -name 'libghostty-vt.a' 2>/dev/null
-          echo "=== pkg-config --libs --static ==="
-          pkg-config --libs --static libghostty-vt-static || true
-          echo "=== pkg-config --debug (which file is read) ==="
-          pkg-config --debug --libs --static libghostty-vt-static 2>&1 | grep -iE "Reading|Parsing|Adding|Path position|Looking|matched" | head -40 || true
+          {
+            printf 'PKG_CONFIG_PATH=%s\n' "$pcdir"
+            printf 'PKG_CONFIG_LIBDIR=%s\n' "$pcdir"
+          } >> "$GITHUB_ENV"
 
       # Unit tests run against the packages directly; the black-box suite runs
       # separately below against the uploaded static binary.
