@@ -149,20 +149,50 @@ But is customized for our needs:
 - version
 - help
 
-## Constraints
+## Additional Requirements
 
-- A daemon must outlive the client that starts it.
+The following are requirements that are not covered in the (overview)[#bgx].
+
+### High-Level Objectives
+
+- "Just Works"
+  - Works without special configuration in arbitrary environments on all
+    supported platforms, via best-effort fallback logic
+
+### High-Level Constraints
+
+- A daemon must outlive the client that starts it
+- Does not require a specific filesystem structure
+
+### `run` Requirements
+
 - If it exits before the session becomes available, run must fail promptly with
-  an error including any daemon stderr output.
+an error including any daemon stderr output.
+
+### Filesystem Requirements
+
+- bgx respects $XDG_RUNTIME_DIR for sockets
+- bgx clearly reports errors with accessing $XDG_RUNTIME_DIR when it is set
+- If not set, or not accessible, bgx prefers default XDG directories when
+  possible, falling back to other options as needed: $HOME/.bgx/, then /tmp/bgx/
+  (and/or others as appropriate per platform), and then ./.bgx/ as a last resort
+  only
+- bgx creates fallback directories idempotently, only when needed
+- bgx moves to the next fallback if creation of a fallback directory fails or
+  reading/writing to it fails due to permissions
+- bgx logs to stderr and includes similar metadata in json outputs upon fallback
+- bgx fails and reports a clear error when all fallbacks fail
 
 ## Testing / Verification
 
 - End-to-end tests verify the observable behavior of each of the CLI tool's
 subcommands in a black-box manner.
-- The [#constraints] each have associated tests strongly validating the
-  constraint is met
+- The [#high-level-constraints] each have associated tests strongly validating the
+  constraint is  met
+- The [#filesystem-requirements] are strongly validated via blackbox tests
+  - These tests use bubblewrap or seatbelt to simulate access issues, and docker to simulate missing directories.
 - Logic that can be affected by timing is validated through fuzz testing that
-  exercises all potential scenarios to discover race conditions automatically
+exercises all potential scenarios to discover race conditions automatically
 
 ## Implementation
 
