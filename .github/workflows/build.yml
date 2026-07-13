@@ -34,7 +34,7 @@ jobs:
             goarch: arm64
             vt: macos-arm64
             zig: aarch64-macos
-          - runner: macos-13
+          - runner: macos-15-intel
             goos: darwin
             goarch: amd64
             vt: macos-amd64
