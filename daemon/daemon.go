@@ -223,6 +223,13 @@ func (s *Session) listen() error {
 	if err != nil {
 		return err
 	}
+	// Keep the socket file in place until it is explicitly removed after the
+	// ended record is persisted. Otherwise Go unlinks it when the listener
+	// closes early in shutdown, leaving a window where a client sees neither a
+	// live socket nor the record it would fall back to.
+	if ul, ok := ln.(*net.UnixListener); ok {
+		ul.SetUnlinkOnClose(false)
+	}
 	s.listener = ln
 	return nil
 }

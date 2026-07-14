@@ -31,6 +31,18 @@ intent_links:
       - client.go:recheckEndedRecord
       - e2e/run_test.go:TestRunFailsPromptlyWhenDaemonExitsBeforeStartup
       - e2e/run_test.go:FuzzRunShortLivedSessionExitCode
+  - intent: "#filesystem-requirements"
+    code:
+      - dirs.go
+      - dirs.go:resolveDirs
+      - dirs.go:socketDir
+      - dirs.go:retentionDir
+      - dirs.go:ensureDirs
+      - dirs.go:fallbackNotice
+      - main.go:withDirs
+      - client.go:runAction
+      - main.go:versionAction
+      - e2e/filesystem_test.go
   - intent: "#testing--verification"
     code:
       - e2e/run_test.go
@@ -38,6 +50,7 @@ intent_links:
       - e2e/attach_test.go
       - e2e/list_test.go
       - e2e/version_test.go
+      - e2e/filesystem_test.go
   - intent: "#implementation"
     code:
       - main.go:daemonCommand

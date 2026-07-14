@@ -28,14 +28,24 @@ intent_links:
       - client.go:emitExit
   - intent: "#configuration-and-layout"
     code:
-      - main.go:socketDir
-      - main.go:retentionDir
+      - dirs.go:socketDir
+      - dirs.go:retentionDir
       - client.go:socketPath
       - client.go:runningInNamespace
       - client.go:failConcurrencyLimit
       - daemon/retention.go:Namespace
       - daemon/retention.go:activeNamespaceSessions
       - daemon/daemon.go:persist
+  - intent: "#base-directory-resolution"
+    code:
+      - dirs.go
+      - dirs.go:resolveDirs
+      - dirs.go:computeDirs
+      - dirs.go:dirCandidates
+      - dirs.go:usableDir
+      - dirs.go:ensureDirs
+      - dirs.go:fallbackNotice
+      - main.go:withDirs
   - intent: "#boundary-alignment-and-truncation-demarcation"
     code:
       - vtscan/vtscan.go
@@ -126,6 +136,21 @@ already at its limit, `run` fails with a JSON error that lists every active
 session so the caller can act on it, and does not spawn a daemon. Both the cap
 and the retention slot accounting count only sockets with a live listener,
 ignoring stale socket files left by crashed daemons.
+
+## Base directory resolution
+
+bgx resolves a single base directory once per process by walking an ordered,
+de-duplicated candidate chain: `$XDG_RUNTIME_DIR/bgx` when that env var is set
+(else the library's default XDG runtime dir), then `$HOME/.bgx`, then
+`<tmp>/bgx`, and finally `<cwd>/.bgx` as a last resort. Each candidate is created
+idempotently (`0700`) and probed for write access; a candidate that fails to
+create or write advances to the next. Sockets live under `<base>/run` and ended
+records under `<base>/ended`. An explicitly-set but unusable `$XDG_RUNTIME_DIR`
+is called out by name. Any fallback is logged to stderr exactly once and echoed
+in JSON output (`run`, `version`) via a `fallback` field; when every candidate
+fails, client commands report a clear all-fallbacks-failed JSON error and do
+nothing else. Resolution lives only in the client: the daemon receives concrete
+`--socket`/`--retention-dir` args and never re-resolves.
 
 ## Boundary alignment and truncation demarcation
 

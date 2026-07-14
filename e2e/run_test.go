@@ -323,7 +323,7 @@ func TestRunFailsPromptlyWhenDaemonExitsBeforeStartup(t *testing.T) {
 	// Occupy the session's socket path with a non-empty directory so the daemon
 	// cannot bind its listener and exits during startup without persisting a
 	// record.
-	sockPath := filepath.Join(dir, "bgx", "startupfail.sock")
+	sockPath := filepath.Join(dir, "bgx", "run", "startupfail.sock")
 	if err := os.MkdirAll(filepath.Join(sockPath, "block"), 0o700); err != nil {
 		t.Fatalf("occupy socket path: %v", err)
 	}

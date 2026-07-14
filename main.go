@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
-	"github.com/adrg/xdg"
 	"github.com/sidedotdev/bgx/daemon"
 	"github.com/sidedotdev/bgx/scrollback"
 	cli "github.com/urfave/cli/v3"
@@ -50,43 +48,43 @@ func newApp() *cli.Command {
 					&cli.IntFlag{Name: "retention", Sources: cli.EnvVars("BGX_RETENTION")},
 					&cli.IntFlag{Name: "concurrency", Value: defaultConcurrency, Sources: cli.EnvVars("BGX_CONCURRENCY")},
 				},
-				Action: runAction,
+				Action: withDirs(runAction),
 			},
 			{
 				Name:      "wait",
 				Usage:     "wait for a session to finish and return its exit code",
 				ArgsUsage: "<id>",
-				Action:    waitAction,
+				Action:    withDirs(waitAction),
 			},
 			{
 				Name:      "kill",
 				Usage:     "kill a running session",
 				ArgsUsage: "<id>",
-				Action:    killAction,
+				Action:    withDirs(killAction),
 			},
 			{
 				Name:      "history",
 				Usage:     "print the scrollback history of a session",
 				ArgsUsage: "<id>",
-				Action:    historyAction,
+				Action:    withDirs(historyAction),
 			},
 			{
 				Name:      "attach",
 				Usage:     "attach to a running session",
 				ArgsUsage: "<id>",
-				Action:    attachAction,
+				Action:    withDirs(attachAction),
 			},
 			{
 				Name:      "send",
 				Usage:     "send raw input to a session PTY without attaching",
 				ArgsUsage: "<id> <text...>",
-				Action:    sendAction,
+				Action:    withDirs(sendAction),
 			},
 			{
 				Name:      "info",
 				Usage:     "print metadata about a session",
 				ArgsUsage: "<id>",
-				Action:    infoAction,
+				Action:    withDirs(infoAction),
 			},
 			{
 				Name:    "list",
@@ -95,24 +93,40 @@ func newApp() *cli.Command {
 				Flags: []cli.Flag{
 					&cli.StringSliceFlag{Name: "metadata"},
 				},
-				Action: listAction,
+				Action: withDirs(listAction),
 			},
 			{
 				Name:   "version",
 				Usage:  "print version and environment info",
-				Action: versionAction,
+				Action: withDirs(versionAction),
 			},
 			daemonCommand(),
 		},
 	}
 }
 
+// withDirs guards a client action behind base-directory resolution so an
+// exhausted fallback chain reports a clear, machine-readable error before the
+// command touches the socket or retention directories.
+func withDirs(action cli.ActionFunc) cli.ActionFunc {
+	return func(ctx context.Context, cmd *cli.Command) error {
+		if err := ensureDirs(); err != nil {
+			return failJSON("%v", err)
+		}
+		return action(ctx, cmd)
+	}
+}
+
 func versionAction(_ context.Context, _ *cli.Command) error {
-	return printJSON(os.Stdout, map[string]any{
+	out := map[string]any{
 		"version":       version,
 		"socket_dir":    socketDir(),
 		"retention_dir": retentionDir(),
-	})
+	}
+	if notice := fallbackNotice(); notice != "" {
+		out["fallback"] = notice
+	}
+	return printJSON(os.Stdout, out)
 }
 
 func notImplemented(_ context.Context, cmd *cli.Command) error {
@@ -122,21 +136,6 @@ func notImplemented(_ context.Context, cmd *cli.Command) error {
 // printJSON writes v as a single line of JSON followed by a newline.
 func printJSON(w io.Writer, v any) error {
 	return json.NewEncoder(w).Encode(v)
-}
-
-// socketDir is where per-session unix domain sockets live, under the XDG
-// runtime dir when available, otherwise a tmp fallback.
-func socketDir() string {
-	if xdg.RuntimeDir != "" {
-		return filepath.Join(xdg.RuntimeDir, "bgx")
-	}
-	return filepath.Join(os.TempDir(), "bgx", "run")
-}
-
-// retentionDir holds persisted records and histories for ended sessions,
-// grouped by id namespace beneath it.
-func retentionDir() string {
-	return filepath.Join(os.TempDir(), "bgx", "ended")
 }
 
 // daemonCommand is the hidden entry point bgx re-execs to run a detached

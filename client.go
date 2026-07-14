@@ -159,11 +159,17 @@ func runAction(_ context.Context, cmd *cli.Command) error {
 	if info.Error != "" {
 		return failJSON("run: session %q failed to start: %s", id, info.Error)
 	}
-	return printJSON(os.Stdout, map[string]any{
+	result := map[string]any{
 		"id":         info.ID,
 		"pid":        info.Pid,
 		"started_at": info.StartedAt,
-	})
+	}
+	if notice := fallbackNotice(); notice != "" {
+		result["fallback"] = notice
+		result["socket_dir"] = socketDir()
+		result["retention_dir"] = retentionDir()
+	}
+	return printJSON(os.Stdout, result)
 }
 
 // spawnDaemon re-execs the bgx binary's hidden __daemon subcommand in its own
@@ -339,6 +345,15 @@ func waitAction(_ context.Context, cmd *cli.Command) error {
 	}
 	if info, ok := endedRecord(id); ok && info.ExitCode != nil {
 		return emitExit(id, *info.ExitCode)
+	}
+	// A daemon shutting down closes its listener before persisting its record,
+	// so a dial can fail while the record is still in flight. A lingering socket
+	// file marks that teardown; give the record a bounded window to appear
+	// before concluding the session is unknown.
+	if _, err := os.Stat(socketPath(id)); err == nil {
+		if info, ok := recheckEndedRecord(id, 2*time.Second); ok && info.ExitCode != nil {
+			return emitExit(id, *info.ExitCode)
+		}
 	}
 	return failJSON("wait: session %q not found", id)
 }
