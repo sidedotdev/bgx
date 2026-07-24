@@ -23,7 +23,12 @@ intent_links:
       - client.go:listAction
       - attach.go:attachAction
       - attach.go:failAttachUnavailable
+      - attach.go:runAttach
       - e2e/attach_test.go:TestAttachReportsEndedAndMissingSessions
+      - attachview.go:attachView
+      - e2e/attach_test.go:TestAttachShowDetachInstructionsReservesLine
+      - e2e/attach_test.go:TestAttachShowDetachInstructionsOneRowTerminal
+      - e2e/attach_test.go:TestAttachShowDetachInstructionsSurvivesDestructiveOutput
       - main.go:versionAction
   - intent: "#constraints"
     code:

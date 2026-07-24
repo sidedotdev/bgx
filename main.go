@@ -71,8 +71,11 @@ func newApp() *cli.Command {
 			{
 				Name:      "attach",
 				Usage:     "attach to a running session",
-				ArgsUsage: "<id>",
-				Action:    withDirs(attachAction),
+				ArgsUsage: "[--show-detach-instructions] <id>",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "show-detach-instructions"},
+				},
+				Action: withDirs(attachAction),
 			},
 			{
 				Name:      "send",

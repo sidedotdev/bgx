@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -59,7 +60,7 @@ func attachAction(_ context.Context, cmd *cli.Command) error {
 		return failJSON(codeAttachFailed, "attach: %s", resp.Error)
 	}
 
-	return runAttach(conn, br)
+	return runAttach(conn, br, cmd.Bool("show-detach-instructions"))
 }
 
 // failAttachUnavailable reports the distinct reason a session cannot be
@@ -77,7 +78,9 @@ func failAttachUnavailable(id string, knownEnded bool) error {
 
 // runAttach drives the interactive bridge over an established attach
 // connection: r reads inbound frames while conn is written for outbound ones.
-func runAttach(conn net.Conn, r io.Reader) error {
+// When showDetachInstructions is set, the bottom line of the local terminal is
+// reserved for a detach hint and the session is told a one-row-shorter size.
+func runAttach(conn net.Conn, r io.Reader, showDetachInstructions bool) error {
 	stdinFd := int(os.Stdin.Fd())
 	if term.IsTerminal(stdinFd) {
 		// Raw mode disables signal generation, so ctrl+\ arrives as a literal
@@ -88,18 +91,49 @@ func runAttach(conn net.Conn, r io.Reader) error {
 		}
 	}
 
-	os.Stdout.WriteString("\x1b[2J\x1b[H")
+	// stdout is shared between the frame reader, the view painter and the exit
+	// reset, so writes are serialized to keep escape sequences intact.
+	var outMu sync.Mutex
+	writeOut := func(s string) {
+		outMu.Lock()
+		defer outMu.Unlock()
+		os.Stdout.WriteString(s)
+	}
+
+	writeOut("\x1b[2J\x1b[H")
+
+	// Reserving a line means rendering session output locally instead of
+	// forwarding it, which requires knowing the terminal size.
+	var view *attachView
+	if showDetachInstructions && term.IsTerminal(stdinFd) {
+		if cols, rows, err := term.GetSize(stdinFd); err == nil && cols > 0 && rows > 0 {
+			view = newAttachView(writeOut, uint16(cols), uint16(rows))
+		}
+	}
+
 	var detached, sessionEnded atomic.Bool
 	// The exit reset depends on the cause: a ctrl+\ detach does a full terminal
 	// reset to clear the session state the replay left on the local screen,
 	// while a session end resets only the cursor so the final rendered output
 	// stays visible. A plain connection error falls back to a full reset.
 	defer func() {
+		// Stop painting before the exit sequences so no repaint lands after them.
+		if view != nil {
+			view.close()
+		}
 		if sessionEnded.Load() && !detached.Load() {
-			os.Stdout.WriteString("\x1b[?25h\x1b[0m")
+			// Release the scroll region and clear the reserved line so the
+			// detach hint doesn't linger after the session's final output,
+			// restoring the cursor so the final state matches a flagless run.
+			if view != nil {
+				if row := view.reservedRow(); row > 0 {
+					writeOut(fmt.Sprintf("\x1b7\x1b[r\x1b[%d;1H\x1b[2K\x1b8", row))
+				}
+			}
+			writeOut("\x1b[?25h\x1b[0m")
 			return
 		}
-		os.Stdout.WriteString("\x1bc")
+		writeOut("\x1bc")
 	}()
 
 	var writeMu sync.Mutex
@@ -113,6 +147,12 @@ func runAttach(conn net.Conn, r io.Reader) error {
 		cols, rows, err := term.GetSize(stdinFd)
 		if err != nil || cols <= 0 || rows <= 0 {
 			return
+		}
+		if view != nil {
+			rows = int(view.setSize(uint16(cols), uint16(rows)))
+			if rows <= 0 {
+				return
+			}
 		}
 		_ = send(daemon.FrameResize, daemon.EncodeResize(uint16(rows), uint16(cols)))
 	}
@@ -136,8 +176,22 @@ func runAttach(conn net.Conn, r io.Reader) error {
 				return
 			}
 			switch tag {
-			case daemon.FrameOutput, daemon.FrameResync:
+			case daemon.FrameOutput:
+				if view != nil {
+					view.feed(payload)
+					break
+				}
+				outMu.Lock()
 				os.Stdout.Write(payload)
+				outMu.Unlock()
+			case daemon.FrameResync:
+				if view != nil {
+					view.resync(payload)
+					break
+				}
+				outMu.Lock()
+				os.Stdout.Write(payload)
+				outMu.Unlock()
 			case daemon.FrameResize:
 				sendSize()
 			case daemon.FrameEnded:

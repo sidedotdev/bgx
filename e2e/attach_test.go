@@ -9,7 +9,42 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	lg "go.mitchellh.com/libghostty"
 )
+
+// renderScreen replays a captured attach output stream through an emulated
+// terminal of the given size and returns its visible rows as plain text, so
+// tests can assert on what a user actually sees rather than on byte sequences.
+func renderScreen(t *testing.T, stream string, cols, rows uint16) []string {
+	t.Helper()
+	term, err := lg.NewTerminal(lg.WithSize(cols, rows))
+	if err != nil {
+		t.Fatalf("NewTerminal: %v", err)
+	}
+	defer term.Close()
+	term.VTWrite([]byte(stream))
+	f, err := lg.NewFormatter(term, lg.WithFormatterFormat(lg.FormatterFormatPlain))
+	if err != nil {
+		t.Fatalf("NewFormatter: %v", err)
+	}
+	defer f.Close()
+	s, err := f.FormatString()
+	if err != nil {
+		t.Fatalf("Format: %v", err)
+	}
+	return strings.Split(s, "\n")
+}
+
+// hintRows reports the 1-based rendered rows holding the detach hint.
+func hintRows(rendered []string) []int {
+	var rows []int
+	for i, line := range rendered {
+		if strings.Contains(line, "detach: ctrl+\\") {
+			rows = append(rows, i+1)
+		}
+	}
+	return rows
+}
 
 // TestAttachStreamsAndDetaches drives the attach client under a pty: the
 // snapshot replays, live output streams, typed input reaches the session, and
@@ -269,11 +304,12 @@ func (c *attachE2EClient) output() string {
 	return string(c.got)
 }
 
-// startAttachE2EClient launches `bgx attach id` under a pty of the given size
-// (nil for the default) and pumps its output into the returned client.
-func startAttachE2EClient(t *testing.T, dir, id string, ws *pty.Winsize) *attachE2EClient {
+// startAttachE2EClient launches `bgx attach [extraArgs...] id` under a pty of
+// the given size (nil for the default) and pumps its output into the returned
+// client.
+func startAttachE2EClient(t *testing.T, dir, id string, ws *pty.Winsize, extraArgs ...string) *attachE2EClient {
 	t.Helper()
-	cmd := exec.Command(binPath, "attach", id)
+	cmd := exec.Command(binPath, append(append([]string{"attach"}, extraArgs...), id)...)
 	cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+dir, "TMPDIR="+dir)
 	var (
 		ptmx *os.File
@@ -505,6 +541,163 @@ func TestAttachClosesOnSessionEnd(t *testing.T) {
 	if !strings.Contains(out, "\x1b[?25h\x1b[0m") {
 		t.Fatalf("session end did not reset the cursor; got %q", out)
 	}
+}
+
+// TestAttachShowDetachInstructionsReservesLine verifies that attaching with
+// --show-detach-instructions reserves the bottom terminal line for the detach
+// hint: the hint is drawn, scrolling is fenced off above it, the session sees a
+// one-row-shorter terminal, and session end clears the reserved line without a
+// full terminal reset.
+func TestAttachShowDetachInstructionsReservesLine(t *testing.T) {
+	dir := runDir(t)
+
+	// The session echoes its controlling terminal size on every input line, so
+	// the reduced size reported by the client is observable.
+	if res := bgxIn(t, dir, "run", "hint", "sh", "-c", "while IFS= read -r _; do stty size; done"); res.exitCode != 0 {
+		t.Fatalf("run exit = %d, stderr=%q", res.exitCode, res.stderr)
+	}
+
+	c := startAttachE2EClient(t, dir, "hint", &pty.Winsize{Rows: 50, Cols: 120}, "--show-detach-instructions")
+	defer c.ptmx.Close()
+
+	// The detach hint is drawn on the bottom row and a scroll region keeps
+	// session output confined to the rows above it.
+	c.waitFor(t, "detach: ctrl+\\")
+	c.waitFor(t, "\x1b[1;49r")
+
+	// Give the daemon a moment to apply the reduced size before probing.
+	time.Sleep(300 * time.Millisecond)
+	if _, err := c.ptmx.Write([]byte("\n")); err != nil {
+		t.Fatalf("write newline: %v", err)
+	}
+	c.waitFor(t, "49 120")
+
+	if rows := hintRows(renderScreen(t, c.output(), 120, 50)); len(rows) != 1 || rows[0] != 50 {
+		t.Fatalf("detach hint rendered on rows %v, want only row 50", rows)
+	}
+
+	// Growing the terminal moves the hint to the new bottom row, leaving no
+	// stale hint on the previously reserved row.
+	if err := pty.Setsize(c.ptmx, &pty.Winsize{Rows: 60, Cols: 120}); err != nil {
+		t.Fatalf("setsize: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if _, err := c.ptmx.Write([]byte("\n")); err != nil {
+		t.Fatalf("write newline: %v", err)
+	}
+	c.waitFor(t, "59 120")
+	if rows := hintRows(renderScreen(t, c.output(), 120, 60)); len(rows) != 1 || rows[0] != 60 {
+		t.Fatalf("after growing, detach hint rendered on rows %v, want only row 60", rows)
+	}
+
+	// Ending the session must clear the reserved line, leaving no trace of the
+	// hint on screen, and must not perform the full reset a detach uses.
+	bgxIn(t, dir, "kill", "hint")
+	select {
+	case <-c.readDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("attach client did not exit when the session ended")
+	}
+	if err := c.cmd.Wait(); err != nil {
+		t.Fatalf("attach client wait: %v", err)
+	}
+
+	out := c.output()
+	if strings.Contains(out, "\x1bc") {
+		t.Fatalf("session end performed a full terminal reset; got %q", out)
+	}
+	if rows := hintRows(renderScreen(t, out, 120, 60)); len(rows) != 0 {
+		t.Fatalf("detach hint still rendered on rows %v after session end", rows)
+	}
+}
+
+// TestAttachShowDetachInstructionsSurvivesDestructiveOutput verifies the
+// reserved line is isolated from the session's own control sequences: screen
+// clears, scrollback erase, scroll-region changes, alternate-screen
+// transitions, absolute cursor addressing and heavy scrolling must all leave the
+// hint intact on the bottom row while the session renders above it.
+func TestAttachShowDetachInstructionsSurvivesDestructiveOutput(t *testing.T) {
+	dir := runDir(t)
+
+	// Each input line triggers a burst of destructive sequences followed by
+	// enough lines to scroll the session area several times over.
+	const script = `while IFS= read -r _; do
+printf '\033[?1049h\033[2J\033[H\033[1;1r\033[5;3HWRECKED\033[?1049l'
+printf '\033[2J\033[3J\033[r\033[H\033[1;1HCLEARED'
+i=1; while [ $i -le 60 ]; do printf '\nline%d' "$i"; i=$((i+1)); done
+printf '\nDONE-MARKER'
+done`
+	if res := bgxIn(t, dir, "run", "wreck", "sh", "-c", script); res.exitCode != 0 {
+		t.Fatalf("run exit = %d, stderr=%q", res.exitCode, res.stderr)
+	}
+
+	c := startAttachE2EClient(t, dir, "wreck", &pty.Winsize{Rows: 20, Cols: 80}, "--show-detach-instructions")
+	defer c.ptmx.Close()
+
+	c.waitFor(t, "detach: ctrl+\\")
+	time.Sleep(300 * time.Millisecond)
+	if _, err := c.ptmx.Write([]byte("\n")); err != nil {
+		t.Fatalf("write newline: %v", err)
+	}
+	c.waitFor(t, "DONE-MARKER")
+	// Let the coalesced repaint of the final state land.
+	time.Sleep(300 * time.Millisecond)
+
+	rendered := renderScreen(t, c.output(), 80, 20)
+	if rows := hintRows(rendered); len(rows) != 1 || rows[0] != 20 {
+		t.Fatalf("detach hint rendered on rows %v, want only row 20; screen=%q", rows, rendered)
+	}
+	sessionArea := strings.Join(rendered[:len(rendered)-1], "\n")
+	if !strings.Contains(sessionArea, "DONE-MARKER") {
+		t.Fatalf("session output missing from the reserved-line screen; screen=%q", rendered)
+	}
+	if strings.Contains(strings.Join(rendered, "\n"), "WRECKED") {
+		t.Fatalf("alternate-screen output leaked onto the primary screen; screen=%q", rendered)
+	}
+
+	c.detach(t)
+	bgxIn(t, dir, "kill", "wreck")
+}
+
+// TestAttachShowDetachInstructionsOneRowTerminal verifies that a one-row
+// terminal leaves no room for the hint: nothing is reserved and the session
+// sees the full (single-row) size.
+func TestAttachShowDetachInstructionsOneRowTerminal(t *testing.T) {
+	dir := runDir(t)
+
+	// The size is echoed without a trailing newline so it stays visible on a
+	// single-row screen instead of immediately scrolling off.
+	script := `while IFS= read -r _; do printf '%s' "$(stty size)"; done`
+	if res := bgxIn(t, dir, "run", "hint1", "sh", "-c", script); res.exitCode != 0 {
+		t.Fatalf("run exit = %d, stderr=%q", res.exitCode, res.stderr)
+	}
+
+	c := startAttachE2EClient(t, dir, "hint1", &pty.Winsize{Rows: 20, Cols: 120}, "--show-detach-instructions")
+	defer c.ptmx.Close()
+
+	c.waitFor(t, "detach: ctrl+\\")
+
+	// Shrinking to a single row leaves no room for both, so the reservation is
+	// dropped: the hint is cleared and the session gets the whole terminal.
+	if err := pty.Setsize(c.ptmx, &pty.Winsize{Rows: 1, Cols: 120}); err != nil {
+		t.Fatalf("setsize: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if _, err := c.ptmx.Write([]byte("\n")); err != nil {
+		t.Fatalf("write newline: %v", err)
+	}
+	c.waitFor(t, "1 120")
+
+	rendered := renderScreen(t, c.output(), 120, 1)
+	if rows := hintRows(rendered); len(rows) != 0 {
+		t.Fatalf("one-row terminal still rendered the detach hint on rows %v", rows)
+	}
+	if !strings.Contains(strings.Join(rendered, "\n"), "1 120") {
+		t.Fatalf("one-row terminal did not give the session the whole screen; screen=%q", rendered)
+	}
+
+	c.detach(t)
+	bgxIn(t, dir, "kill", "hint1")
 }
 
 // TestAttachReportsEndedAndMissingSessions verifies attach distinguishes a

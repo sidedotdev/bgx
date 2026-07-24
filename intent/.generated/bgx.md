@@ -21,6 +21,10 @@ intent_links:
       - daemon/attach.go:serveAttach
       - daemon/daemon.go:pumpOutput
       - daemon/daemon_test.go:TestAttachSnapshotStreamCoversEntireOutput
+      - attach.go:runAttach
+      - attachview.go:attachView
+      - attachview.go:paint
+      - e2e/attach_test.go:TestAttachShowDetachInstructionsSurvivesDestructiveOutput
   - intent: "#send-and-wait-semantics"
     code:
       - client.go:sendAction
@@ -114,6 +118,15 @@ fanning it out. Each PTY chunk therefore lands entirely before the snapshot
 not in the snapshot), so a client's snapshot and stream tile the full session
 output with no gap or overlap. `TestAttachSnapshotStreamCoversEntireOutput` is
 the torture test guarding this invariant.
+
+With `--show-detach-instructions` the client cannot forward session bytes to the
+physical terminal, because the stream may clear the screen, reset scrolling
+margins, address the cursor absolutely or switch to the alternate screen, any of
+which would corrupt the reserved line. Instead the client keeps its own
+libghostty-vt terminal sized to cols x (rows-1) — the size it also advertises to
+the daemon — feeds Output frames into it, recreates it on Resync, and paints its
+`DumpScreen` plus the hint as a single coalesced redraw. A terminal with only one
+row reserves nothing and gets the full size.
 
 ## Send and wait semantics
 
