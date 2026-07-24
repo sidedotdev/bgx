@@ -39,12 +39,6 @@ intent_links:
       - client.go:recheckEndedRecord
       - e2e/run_test.go:TestRunFailsPromptlyWhenDaemonExitsBeforeStartup
       - e2e/run_test.go:FuzzRunShortLivedSessionExitCode
-  - intent: "#error-requriements"
-    code:
-      - errors.go
-      - client.go:failConcurrencyLimit
-      - e2e/errors_test.go:TestErrorsAreJSONOnStderrWithCodes
-      - e2e/run_test.go:TestRunEnforcesNamespaceConcurrencyLimit
   - intent: "#filesystem-requirements"
     code:
       - dirs.go
@@ -196,7 +190,7 @@ The following are requirements that are not covered in the (overview)[#bgx].
 - A daemon must outlive the client that starts it
 - Does not require a specific filesystem structure
 
-### Error Requriements
+### Error Requirements
 
 - Errors always return json, even for commands that normally do not, with unique
   error codes included alongside the error message
