@@ -96,6 +96,17 @@ func failJSON(format string, args ...any) error {
 	return nil
 }
 
+// failJSONCode prints a JSON error object with a stable machine-readable error
+// code to stderr and exits non-zero.
+func failJSONCode(code, format string, args ...any) error {
+	_ = printJSON(os.Stderr, map[string]string{
+		"code":  code,
+		"error": fmt.Sprintf(format, args...),
+	})
+	os.Exit(1)
+	return nil
+}
+
 func runAction(_ context.Context, cmd *cli.Command) error {
 	args := cmd.Args().Slice()
 	if len(args) == 0 {

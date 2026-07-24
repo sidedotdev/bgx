@@ -22,9 +22,12 @@ intent_links:
       - client.go:infoAction
       - client.go:listAction
       - attach.go:attachAction
+      - attach.go:failAttachUnavailable
+      - e2e/attach_test.go:TestAttachReportsEndedAndMissingSessions
       - main.go:versionAction
   - intent: "#constraints"
     code:
+      - client.go:failJSONCode
       - client.go:waitForSession
       - client.go:spawnDaemon
       - client.go:startupError
