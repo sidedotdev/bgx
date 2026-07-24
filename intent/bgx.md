@@ -26,6 +26,8 @@ intent_links:
       - attach.go:runAttach
       - e2e/attach_test.go:TestAttachReportsEndedAndMissingSessions
       - attachview.go:attachView
+      - attachview.go:detachHintStyle
+      - attachview.go:paint
       - e2e/attach_test.go:TestAttachShowDetachInstructionsReservesLine
       - e2e/attach_test.go:TestAttachShowDetachInstructionsOneRowTerminal
       - e2e/attach_test.go:TestAttachShowDetachInstructionsSurvivesDestructiveOutput

@@ -15,6 +15,11 @@ const paintInterval = 8 * time.Millisecond
 
 const detachHint = " detach: ctrl+\\ "
 
+// detachHintStyle gives the reserved line its own subtle background (dark gray
+// with a soft gray foreground) so it reads as client chrome, visually distinct
+// from session content.
+const detachHintStyle = "\x1b[48;5;236;38;5;250m"
+
 // attachView renders session output through a client-local terminal so the
 // bottom line of the physical terminal can be reserved for the detach hint.
 // Session bytes are never forwarded to the physical terminal: only the rendered
@@ -209,7 +214,9 @@ func (v *attachView) paint() {
 	b.WriteString("\x1b[2J\x1b[H\x1b[m")
 	b.Write(screen)
 	if reserved {
-		fmt.Fprintf(&b, "\x1b7\x1b[%d;1H\x1b[2K\x1b[7m%s\x1b[0m\x1b8", rows+1, detachHint)
+		// Setting the style before the erase fills the entire line with the
+		// hint's background via background-color erase.
+		fmt.Fprintf(&b, "\x1b7\x1b[%d;1H%s\x1b[2K%s\x1b[0m\x1b8", rows+1, detachHintStyle, detachHint)
 	}
 	b.WriteString("\x1b[?2026l")
 	v.write(b.String())

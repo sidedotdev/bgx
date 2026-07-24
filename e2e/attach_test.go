@@ -35,6 +35,28 @@ func renderScreen(t *testing.T, stream string, cols, rows uint16) []string {
 	return strings.Split(s, "\n")
 }
 
+// renderScreenVT is like renderScreen but preserves colors and styles as VT
+// sequences, so tests can assert on the rendered styling of each row.
+func renderScreenVT(t *testing.T, stream string, cols, rows uint16) []string {
+	t.Helper()
+	term, err := lg.NewTerminal(lg.WithSize(cols, rows))
+	if err != nil {
+		t.Fatalf("NewTerminal: %v", err)
+	}
+	defer term.Close()
+	term.VTWrite([]byte(stream))
+	f, err := lg.NewFormatter(term, lg.WithFormatterFormat(lg.FormatterFormatVT))
+	if err != nil {
+		t.Fatalf("NewFormatter: %v", err)
+	}
+	defer f.Close()
+	s, err := f.FormatString()
+	if err != nil {
+		t.Fatalf("Format: %v", err)
+	}
+	return strings.Split(s, "\r\n")
+}
+
 // hintRows reports the 1-based rendered rows holding the detach hint.
 func hintRows(rendered []string) []int {
 	var rows []int
@@ -564,6 +586,17 @@ func TestAttachShowDetachInstructionsReservesLine(t *testing.T) {
 	// session output confined to the rows above it.
 	c.waitFor(t, "detach: ctrl+\\")
 	c.waitFor(t, "\x1b[1;49r")
+
+	// The reserved line renders with its own subtle background color, distinct
+	// from the session rows above it.
+	const hintBG = "\x1b[48;5;236m"
+	vtRows := renderScreenVT(t, c.output(), 120, 50)
+	if last := vtRows[len(vtRows)-1]; !strings.Contains(last, hintBG) || !strings.Contains(last, "detach: ctrl+\\") {
+		t.Fatalf("reserved line missing its background styling; got %q", last)
+	}
+	if sessionRows := strings.Join(vtRows[:len(vtRows)-1], "\n"); strings.Contains(sessionRows, hintBG) {
+		t.Fatalf("hint background leaked into session rows; got %q", sessionRows)
+	}
 
 	// Give the daemon a moment to apply the reduced size before probing.
 	time.Sleep(300 * time.Millisecond)
