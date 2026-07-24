@@ -54,7 +54,8 @@ func bgxIn(t *testing.T, dir string, args ...string) result {
 	return result{stdout: stdout.String(), stderr: stderr.String(), exitCode: exitCode}
 }
 
-// decodeJSON parses a command's stdout as a single JSON object.
+// decodeJSON parses a command's output (stdout or stderr) as a single JSON
+// object.
 func decodeJSON(t *testing.T, s string) map[string]any {
 	t.Helper()
 	var m map[string]any
@@ -135,9 +136,12 @@ func TestRunSurfacesExecFailure(t *testing.T) {
 	if res.exitCode == 0 {
 		t.Fatalf("run of missing command succeeded, want failure; stdout=%q", res.stdout)
 	}
-	m := decodeJSON(t, res.stdout)
+	m := decodeJSON(t, res.stderr)
 	if _, ok := m["error"].(string); !ok {
-		t.Fatalf("run output = %q, want JSON error", res.stdout)
+		t.Fatalf("run stderr = %q, want JSON error", res.stderr)
+	}
+	if m["code"] != "startup_failed" {
+		t.Fatalf("run error code = %v, want startup_failed", m["code"])
 	}
 
 	info := decodeJSON(t, bgxIn(t, dir, "info", "badexec").stdout)
@@ -195,9 +199,12 @@ func TestDuplicateIDRequiresOverwrite(t *testing.T) {
 	if again.exitCode == 0 {
 		t.Fatalf("duplicate run without --overwrite-id succeeded, want failure; stdout=%q", again.stdout)
 	}
-	m := decodeJSON(t, again.stdout)
+	m := decodeJSON(t, again.stderr)
 	if _, ok := m["error"].(string); !ok {
-		t.Fatalf("duplicate run output = %q, want JSON error", again.stdout)
+		t.Fatalf("duplicate run stderr = %q, want JSON error", again.stderr)
+	}
+	if m["code"] != "already_exists" {
+		t.Fatalf("duplicate run error code = %v, want already_exists", m["code"])
 	}
 
 	overwrite := bgxIn(t, dir, "run", "--overwrite-id", "dup", "echo", "third")
@@ -227,9 +234,12 @@ func TestRunEnforcesNamespaceConcurrencyLimit(t *testing.T) {
 		t.Cleanup(func() { bgxIn(t, dir, "kill", "ns/c") })
 		t.Fatalf("run over limit succeeded, want failure; stdout=%q", over.stdout)
 	}
-	m := decodeJSON(t, over.stdout)
+	m := decodeJSON(t, over.stderr)
 	if _, ok := m["error"].(string); !ok {
-		t.Fatalf("over-limit run output = %q, want JSON error", over.stdout)
+		t.Fatalf("over-limit run stderr = %q, want JSON error", over.stderr)
+	}
+	if m["code"] != "concurrency_limit" {
+		t.Fatalf("over-limit error code = %v, want concurrency_limit", m["code"])
 	}
 	sessions, ok := m["sessions"].([]any)
 	if !ok || len(sessions) != 2 {
@@ -338,10 +348,10 @@ func TestRunFailsPromptlyWhenDaemonExitsBeforeStartup(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Fatalf("run took %s to fail, want prompt failure well under the readiness timeout", elapsed)
 	}
-	m := decodeJSON(t, res.stdout)
+	m := decodeJSON(t, res.stderr)
 	errMsg, ok := m["error"].(string)
 	if !ok {
-		t.Fatalf("run output = %q, want JSON error", res.stdout)
+		t.Fatalf("run stderr = %q, want JSON error", res.stderr)
 	}
 	// The message must identify the startup failure specifically, so an
 	// unrelated early validation error can't satisfy the test, and it must not

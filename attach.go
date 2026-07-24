@@ -27,35 +27,35 @@ import (
 func attachAction(_ context.Context, cmd *cli.Command) error {
 	id := cmd.Args().First()
 	if id == "" {
-		return failJSON("attach: an id is required")
+		return failJSON(codeInvalidArgument, "attach: an id is required")
 	}
 	info, ok := liveInfo(id)
 	if !ok || !info.Running {
-		return failJSON("attach: session %q is not running", id)
+		return failJSON(codeNotFound, "attach: session %q is not running", id)
 	}
 
 	conn, err := net.Dial("unix", socketPath(id))
 	if err != nil {
-		return failJSON("attach: session %q is not running", id)
+		return failJSON(codeNotFound, "attach: session %q is not running", id)
 	}
 	defer conn.Close()
 
 	if err := json.NewEncoder(conn).Encode(daemon.Request{Op: "attach"}); err != nil {
-		return failJSON("attach: %v", err)
+		return failJSON(codeInternal, "attach: %v", err)
 	}
 	// Read exactly the response line so its trailing newline is consumed before
 	// the connection switches to binary frames.
 	br := bufio.NewReader(conn)
 	line, err := br.ReadBytes('\n')
 	if err != nil && len(line) == 0 {
-		return failJSON("attach: %v", err)
+		return failJSON(codeInternal, "attach: %v", err)
 	}
 	var resp daemon.Response
 	if err := json.Unmarshal(line, &resp); err != nil {
-		return failJSON("attach: %v", err)
+		return failJSON(codeInternal, "attach: %v", err)
 	}
 	if !resp.OK {
-		return failJSON("attach: %s", resp.Error)
+		return failJSON(codeInternal, "attach: %s", resp.Error)
 	}
 
 	return runAttach(conn, br)

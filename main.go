@@ -18,7 +18,7 @@ var version = "0.0.0-dev"
 
 func main() {
 	if err := newApp().Run(context.Background(), os.Args); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		emitErrorJSON(errorCode(err), err.Error())
 		os.Exit(1)
 	}
 }
@@ -27,7 +27,7 @@ func newApp() *cli.Command {
 	// run stops parsing flags after the session id so the command that follows
 	// keeps its own flags (e.g. "sh -c").
 	stopAfterID := 1
-	return &cli.Command{
+	root := &cli.Command{
 		Name:  "bgx",
 		Usage: "manage async terminal sessions",
 		// A custom JSON version subcommand replaces the built-in plain version flag.
@@ -103,6 +103,8 @@ func newApp() *cli.Command {
 			daemonCommand(),
 		},
 	}
+	applyJSONUsageErrors(root)
+	return root
 }
 
 // withDirs guards a client action behind base-directory resolution so an
@@ -111,7 +113,7 @@ func newApp() *cli.Command {
 func withDirs(action cli.ActionFunc) cli.ActionFunc {
 	return func(ctx context.Context, cmd *cli.Command) error {
 		if err := ensureDirs(); err != nil {
-			return failJSON("%v", err)
+			return failJSON(codeFilesystem, "%v", err)
 		}
 		return action(ctx, cmd)
 	}

@@ -88,40 +88,32 @@ func endedRecord(id string) (*daemon.Info, bool) {
 	return &info, true
 }
 
-// failJSON prints a JSON error object and exits non-zero so failures stay
-// machine-readable like every other command's output.
-func failJSON(format string, args ...any) error {
-	_ = printJSON(os.Stdout, map[string]string{"error": fmt.Sprintf(format, args...)})
-	os.Exit(1)
-	return nil
-}
-
 func runAction(_ context.Context, cmd *cli.Command) error {
 	args := cmd.Args().Slice()
 	if len(args) == 0 {
-		return failJSON("run: an id is required")
+		return failJSON(codeInvalidArgument, "run: an id is required")
 	}
 	id, command := args[0], args[1:]
 	if id == "" {
-		return failJSON("run: id must not be empty")
+		return failJSON(codeInvalidArgument, "run: id must not be empty")
 	}
 	if len(command) == 0 {
-		return failJSON("run: a command is required")
+		return failJSON(codeInvalidArgument, "run: a command is required")
 	}
 	metadata := cmd.StringSlice("metadata")
 	if _, err := parseMetadata(metadata); err != nil {
-		return failJSON("run: %v", err)
+		return failJSON(codeInvalidArgument, "run: %v", err)
 	}
 	if len(socketPath(id)) > maxSocketPathLen {
-		return failJSON("run: socket path for id %q exceeds %d bytes", id, maxSocketPathLen)
+		return failJSON(codeInvalidArgument, "run: socket path for id %q exceeds %d bytes", id, maxSocketPathLen)
 	}
 
 	if _, ok := liveInfo(id); ok {
-		return failJSON("run: session %q is already running", id)
+		return failJSON(codeAlreadyExists, "run: session %q is already running", id)
 	}
 	if _, ok := endedRecord(id); ok {
 		if !cmd.Bool("overwrite-id") {
-			return failJSON("run: session %q already exists; pass --overwrite-id to replace it", id)
+			return failJSON(codeAlreadyExists, "run: session %q already exists; pass --overwrite-id to replace it", id)
 		}
 		os.Remove(daemon.RecordPath(retentionDir(), id))
 		os.Remove(daemon.HistoryPath(retentionDir(), id))
@@ -138,7 +130,7 @@ func runAction(_ context.Context, cmd *cli.Command) error {
 	// held until the new session's socket is live and therefore countable.
 	unlock, err := lockNamespace(ns)
 	if err != nil {
-		return failJSON("run: %v", err)
+		return failJSON(codeInternal, "run: %v", err)
 	}
 	defer unlock()
 
@@ -148,16 +140,16 @@ func runAction(_ context.Context, cmd *cli.Command) error {
 
 	dc, stderrPath, err := spawnDaemon(id, command, metadata, cmd)
 	if err != nil {
-		return failJSON("run: %v", err)
+		return failJSON(codeStartupFailed, "run: %v", err)
 	}
 	defer os.Remove(stderrPath)
 
 	info, err := waitForSession(id, dc, stderrPath, socketReadyTimeout)
 	if err != nil {
-		return failJSON("run: %v", err)
+		return failJSON(codeStartupFailed, "run: %v", err)
 	}
 	if info.Error != "" {
-		return failJSON("run: session %q failed to start: %s", id, info.Error)
+		return failJSON(codeStartupFailed, "run: session %q failed to start: %s", id, info.Error)
 	}
 	result := map[string]any{
 		"id":         info.ID,
@@ -324,7 +316,7 @@ func firstStderrLine(path string) string {
 func infoAction(_ context.Context, cmd *cli.Command) error {
 	id := cmd.Args().First()
 	if id == "" {
-		return failJSON("info: an id is required")
+		return failJSON(codeInvalidArgument, "info: an id is required")
 	}
 	if info, ok := liveInfo(id); ok {
 		return printJSON(os.Stdout, infoResult{Exists: true, Info: info})
@@ -338,7 +330,7 @@ func infoAction(_ context.Context, cmd *cli.Command) error {
 func waitAction(_ context.Context, cmd *cli.Command) error {
 	id := cmd.Args().First()
 	if id == "" {
-		return failJSON("wait: an id is required")
+		return failJSON(codeInvalidArgument, "wait: an id is required")
 	}
 	if resp, err := dialRequest(id, daemon.Request{Op: "wait"}); err == nil && resp.OK && resp.ExitCode != nil {
 		return emitExit(id, *resp.ExitCode)
@@ -355,7 +347,7 @@ func waitAction(_ context.Context, cmd *cli.Command) error {
 			return emitExit(id, *info.ExitCode)
 		}
 	}
-	return failJSON("wait: session %q not found", id)
+	return failJSON(codeNotFound, "wait: session %q not found", id)
 }
 
 // emitExit prints the session's exit code as JSON and mirrors it as the bgx
@@ -369,7 +361,7 @@ func emitExit(id string, code int) error {
 func killAction(_ context.Context, cmd *cli.Command) error {
 	id := cmd.Args().First()
 	if id == "" {
-		return failJSON("kill: an id is required")
+		return failJSON(codeInvalidArgument, "kill: an id is required")
 	}
 	if resp, err := dialRequest(id, daemon.Request{Op: "kill"}); err == nil && resp.OK && resp.Info != nil {
 		return printJSON(os.Stdout, infoResult{Exists: true, Info: resp.Info})
@@ -377,7 +369,7 @@ func killAction(_ context.Context, cmd *cli.Command) error {
 	if info, ok := endedRecord(id); ok {
 		return printJSON(os.Stdout, infoResult{Exists: true, Info: info})
 	}
-	return failJSON("kill: session %q not found", id)
+	return failJSON(codeNotFound, "kill: session %q not found", id)
 }
 
 // sendAction joins the trailing arguments with single spaces and writes exactly
@@ -386,18 +378,18 @@ func killAction(_ context.Context, cmd *cli.Command) error {
 func sendAction(_ context.Context, cmd *cli.Command) error {
 	args := cmd.Args().Slice()
 	if len(args) == 0 {
-		return failJSON("send: an id is required")
+		return failJSON(codeInvalidArgument, "send: an id is required")
 	}
 	id, text := args[0], args[1:]
 	if id == "" {
-		return failJSON("send: id must not be empty")
+		return failJSON(codeInvalidArgument, "send: id must not be empty")
 	}
 	resp, err := dialRequest(id, daemon.Request{Op: "send", Input: []byte(strings.Join(text, " "))})
 	if err != nil {
-		return failJSON("send: session %q not found", id)
+		return failJSON(codeNotFound, "send: session %q not found", id)
 	}
 	if !resp.OK {
-		return failJSON("send: %s", resp.Error)
+		return failJSON(codeInternal, "send: %s", resp.Error)
 	}
 	return printJSON(os.Stdout, map[string]any{"id": id, "sent": true})
 }
@@ -408,7 +400,7 @@ func sendAction(_ context.Context, cmd *cli.Command) error {
 func historyAction(_ context.Context, cmd *cli.Command) error {
 	id := cmd.Args().First()
 	if id == "" {
-		return failJSON("history: an id is required")
+		return failJSON(codeInvalidArgument, "history: an id is required")
 	}
 	if resp, err := dialRequest(id, daemon.Request{Op: "history"}); err == nil && resp.OK {
 		_, werr := os.Stdout.Write(resp.History)
@@ -418,13 +410,13 @@ func historyAction(_ context.Context, cmd *cli.Command) error {
 		_, werr := os.Stdout.Write(data)
 		return werr
 	}
-	return failJSON("history: session %q not found", id)
+	return failJSON(codeNotFound, "history: session %q not found", id)
 }
 
 func listAction(_ context.Context, cmd *cli.Command) error {
 	filters, err := parseMetadata(cmd.StringSlice("metadata"))
 	if err != nil {
-		return failJSON("list: %v", err)
+		return failJSON(codeInvalidArgument, "list: %v", err)
 	}
 
 	byID := make(map[string]*daemon.Info)
@@ -492,9 +484,10 @@ func failConcurrencyLimit(ns string, limit int, sessions []*daemon.Info) error {
 	if ns == "" {
 		label = "the global namespace"
 	}
-	_ = printJSON(os.Stdout, map[string]any{
+	_ = printJSON(os.Stderr, map[string]any{
 		"error": fmt.Sprintf("run: %s already has %d active session(s); concurrency limit is %d",
 			label, len(sessions), limit),
+		"code":     codeConcurrencyLimit,
 		"sessions": sessions,
 	})
 	os.Exit(1)

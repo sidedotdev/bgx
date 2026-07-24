@@ -23,6 +23,13 @@ intent_links:
       - client.go:listAction
       - attach.go:attachAction
       - main.go:versionAction
+  - intent: "#high-level-constraints"
+    code:
+      - errors.go
+      - main.go:main
+      - main.go:newApp
+      - client.go:failConcurrencyLimit
+      - e2e/errors_test.go
   - intent: "#constraints"
     code:
       - client.go:waitForSession
@@ -45,6 +52,7 @@ intent_links:
       - e2e/filesystem_test.go
   - intent: "#testing--verification"
     code:
+      - e2e/errors_test.go
       - e2e/run_test.go
       - e2e/kill_send_history_test.go
       - e2e/attach_test.go

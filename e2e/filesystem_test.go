@@ -202,10 +202,13 @@ func TestAllFallbacksDeniedReportsError(t *testing.T) {
 		t.Fatalf("run succeeded despite all fallbacks denied: stdout=%q stderr=%q", res.stdout, res.stderr)
 	}
 
-	m := decodeJSON(t, res.stdout)
+	m := decodeJSON(t, res.stderr)
 	e, ok := m["error"].(string)
 	if !ok || !strings.Contains(e, "all base directory fallbacks failed") {
 		t.Fatalf("run json missing all-fallbacks error: %v", m)
+	}
+	if m["code"] != "filesystem" {
+		t.Fatalf("all-fallbacks error code = %v, want filesystem", m["code"])
 	}
 }
 

@@ -46,6 +46,12 @@ intent_links:
       - dirs.go:ensureDirs
       - dirs.go:fallbackNotice
       - main.go:withDirs
+  - intent: "#error-reporting"
+    code:
+      - errors.go
+      - main.go:main
+      - client.go:failConcurrencyLimit
+      - e2e/errors_test.go
   - intent: "#boundary-alignment-and-truncation-demarcation"
     code:
       - vtscan/vtscan.go
@@ -136,6 +142,16 @@ already at its limit, `run` fails with a JSON error that lists every active
 session so the caller can act on it, and does not spawn a daemon. Both the cap
 and the retention slot accounting count only sockets with a live listener,
 ignoring stale socket files left by crashed daemons.
+
+## Error reporting
+
+Every command failure emits a single JSON object on stderr — never stdout —
+shaped `{"error": <message>, "code": <code>}` and exits non-zero. Codes form a
+small stable taxonomy (`invalid_argument`, `not_found`, `already_exists`,
+`concurrency_limit`, `startup_failed`, `filesystem`, `internal`); the
+concurrency-limit payload additionally carries the offending `sessions`.
+urfave/cli usage errors and unknown commands are intercepted so parse failures
+follow the same contract instead of plain-text usage/help output.
 
 ## Base directory resolution
 
