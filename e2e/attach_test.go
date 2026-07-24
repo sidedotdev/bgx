@@ -506,3 +506,45 @@ func TestAttachClosesOnSessionEnd(t *testing.T) {
 		t.Fatalf("session end did not reset the cursor; got %q", out)
 	}
 }
+
+// TestAttachReportsEndedAndMissingSessions verifies attach distinguishes a
+// session that never existed from one that already ended, emitting a distinct
+// JSON error with a machine-readable code on stderr for each case.
+func TestAttachReportsEndedAndMissingSessions(t *testing.T) {
+	dir := runDir(t)
+
+	res := bgxIn(t, dir, "attach", "no-such-session")
+	if res.exitCode == 0 {
+		t.Fatalf("attach to missing session succeeded; stdout=%q", res.stdout)
+	}
+	if res.stdout != "" {
+		t.Fatalf("attach error leaked to stdout: %q", res.stdout)
+	}
+	errObj := decodeJSON(t, res.stderr)
+	if errObj["code"] != "session_not_found" {
+		t.Fatalf("missing session code = %v, want session_not_found; stderr=%q", errObj["code"], res.stderr)
+	}
+	if msg, _ := errObj["error"].(string); !strings.Contains(msg, "does not exist") {
+		t.Fatalf("missing session error = %q, want mention of not existing", msg)
+	}
+
+	if res := bgxIn(t, dir, "run", "attend", "true"); res.exitCode != 0 {
+		t.Fatalf("run exit = %d, stderr=%q", res.exitCode, res.stderr)
+	}
+	waitEnded(t, dir, "attend")
+
+	res = bgxIn(t, dir, "attach", "attend")
+	if res.exitCode == 0 {
+		t.Fatalf("attach to ended session succeeded; stdout=%q", res.stdout)
+	}
+	if res.stdout != "" {
+		t.Fatalf("attach error leaked to stdout: %q", res.stdout)
+	}
+	errObj = decodeJSON(t, res.stderr)
+	if errObj["code"] != "session_ended" {
+		t.Fatalf("ended session code = %v, want session_ended; stderr=%q", errObj["code"], res.stderr)
+	}
+	if msg, _ := errObj["error"].(string); !strings.Contains(msg, "already ended") {
+		t.Fatalf("ended session error = %q, want mention of having ended", msg)
+	}
+}

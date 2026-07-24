@@ -19,6 +19,9 @@ const (
 	codeStartupFailed    = "startup_failed"
 	codeFilesystem       = "filesystem"
 	codeInternal         = "internal"
+	codeSessionNotFound  = "session_not_found"
+	codeSessionEnded     = "session_ended"
+	codeAttachFailed     = "attach_failed"
 )
 
 // codedError attaches a machine-readable code to an error so the top-level

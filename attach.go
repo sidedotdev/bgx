@@ -31,34 +31,48 @@ func attachAction(_ context.Context, cmd *cli.Command) error {
 	}
 	info, ok := liveInfo(id)
 	if !ok || !info.Running {
-		return failJSON(codeNotFound, "attach: session %q is not running", id)
+		return failAttachUnavailable(id, ok && !info.Running)
 	}
 
 	conn, err := net.Dial("unix", socketPath(id))
 	if err != nil {
-		return failJSON(codeNotFound, "attach: session %q is not running", id)
+		// The session can end between the liveness check and the dial.
+		return failAttachUnavailable(id, false)
 	}
 	defer conn.Close()
 
 	if err := json.NewEncoder(conn).Encode(daemon.Request{Op: "attach"}); err != nil {
-		return failJSON(codeInternal, "attach: %v", err)
+		return failJSON(codeAttachFailed, "attach: %v", err)
 	}
 	// Read exactly the response line so its trailing newline is consumed before
 	// the connection switches to binary frames.
 	br := bufio.NewReader(conn)
 	line, err := br.ReadBytes('\n')
 	if err != nil && len(line) == 0 {
-		return failJSON(codeInternal, "attach: %v", err)
+		return failJSON(codeAttachFailed, "attach: %v", err)
 	}
 	var resp daemon.Response
 	if err := json.Unmarshal(line, &resp); err != nil {
-		return failJSON(codeInternal, "attach: %v", err)
+		return failJSON(codeAttachFailed, "attach: %v", err)
 	}
 	if !resp.OK {
-		return failJSON(codeInternal, "attach: %s", resp.Error)
+		return failJSON(codeAttachFailed, "attach: %s", resp.Error)
 	}
 
 	return runAttach(conn, br)
+}
+
+// failAttachUnavailable reports the distinct reason a session cannot be
+// attached to: it either already ended (a daemon answered as not running, or a
+// persisted ended record exists) or it never existed.
+func failAttachUnavailable(id string, knownEnded bool) error {
+	if knownEnded {
+		return failJSON(codeSessionEnded, "attach: session %q has already ended", id)
+	}
+	if _, ended := endedRecord(id); ended {
+		return failJSON(codeSessionEnded, "attach: session %q has already ended", id)
+	}
+	return failJSON(codeSessionNotFound, "attach: session %q does not exist", id)
 }
 
 // runAttach drives the interactive bridge over an established attach

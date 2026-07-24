@@ -23,7 +23,7 @@ func TestErrorsAreJSONOnStderrWithCodes(t *testing.T) {
 		{"kill unknown session", []string{"kill", "ghost"}, "not_found"},
 		{"send unknown session", []string{"send", "ghost", "hi"}, "not_found"},
 		{"history unknown session", []string{"history", "ghost"}, "not_found"},
-		{"attach unknown session", []string{"attach", "ghost"}, "not_found"},
+		{"attach unknown session", []string{"attach", "ghost"}, "session_not_found"},
 		{"list invalid metadata filter", []string{"list", "--metadata", "no-equals"}, "invalid_argument"},
 		{"unknown flag usage error", []string{"kill", "--bogus-flag", "x"}, "invalid_argument"},
 		{"unknown command", []string{"bogus-command"}, "invalid_argument"},
