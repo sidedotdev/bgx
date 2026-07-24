@@ -156,6 +156,7 @@ But is customized for our needs:
    - Detach with ctrl+\
    - Closes automatically when session ends, resetting the cursor but not the
      entire terminal state
+   - When initiated, detects if the session has already end
 - send <id> <text...>
    - Send raw input to session PTY without attaching
 - list|ls
@@ -176,6 +177,9 @@ The following are requirements that are not covered in the (overview)[#bgx].
 
 - A daemon must outlive the client that starts it
 - Does not require a specific filesystem structure
+- Errors always return json, even for commands that normally do not, with error
+  codes included alongside the error message
+- Errors are always in stderr, not stdout
 
 ### `run` Requirements
 
