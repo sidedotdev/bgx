@@ -25,13 +25,6 @@ intent_links:
       - attach.go:failAttachUnavailable
       - e2e/attach_test.go:TestAttachReportsEndedAndMissingSessions
       - main.go:versionAction
-  - intent: "#high-level-constraints"
-    code:
-      - errors.go
-      - main.go:main
-      - main.go:newApp
-      - client.go:failConcurrencyLimit
-      - e2e/errors_test.go
   - intent: "#constraints"
     code:
       - client.go:failJSONCode
@@ -55,7 +48,6 @@ intent_links:
       - e2e/filesystem_test.go
   - intent: "#testing--verification"
     code:
-      - e2e/errors_test.go
       - e2e/run_test.go
       - e2e/kill_send_history_test.go
       - e2e/attach_test.go
@@ -151,8 +143,9 @@ But is customized for our needs:
    - Any still-attached clients will also receive all such output before closing
      automatically
 - history <id>
-- attach <id>
-   - Session must exist and be running
+- attach <id> [--show-detach-instructions]
+   - When initiated, detects if the session has already ended or doesn't exist,
+     outputting the appropriate error for each case
    - Attaches to session, outputs "current" rendered terminal state
      (specifically: the most recent available ground and rune boundary state)
      and continues to update it by streaming raw output since that state
@@ -167,7 +160,6 @@ But is customized for our needs:
    - Detach with ctrl+\
    - Closes automatically when session ends, resetting the cursor but not the
      entire terminal state
-   - When initiated, detects if the session has already ended or doesn't exist, outputting the appropriate error for each case
 - send <id> <text...>
    - Send raw input to session PTY without attaching
 - list|ls
@@ -188,8 +180,8 @@ The following are requirements that are not covered in the (overview)[#bgx].
 
 - A daemon must outlive the client that starts it
 - Does not require a specific filesystem structure
-- Errors always return json, even for commands that normally do not, with error
-  codes included alongside the error message
+- Errors always return json, even for commands that normally do not, with unique
+  error codes included alongside the error message
 - Errors are always in stderr, not stdout
 
 ### `run` Requirements
