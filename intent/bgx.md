@@ -156,7 +156,7 @@ But is customized for our needs:
    - Detach with ctrl+\
    - Closes automatically when session ends, resetting the cursor but not the
      entire terminal state
-   - When initiated, detects if the session has already end
+   - When initiated, detects if the session has already ended or doesn't exist, outputting the appropriate error for each case
 - send <id> <text...>
    - Send raw input to session PTY without attaching
 - list|ls
