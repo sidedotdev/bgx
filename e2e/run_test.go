@@ -241,6 +241,9 @@ func TestRunEnforcesNamespaceConcurrencyLimit(t *testing.T) {
 	if m["code"] != "concurrency_limit" {
 		t.Fatalf("over-limit error code = %v, want concurrency_limit", m["code"])
 	}
+	if m["source"] != "bgx" {
+		t.Fatalf("over-limit error source = %v, want %q", m["source"], "bgx")
+	}
 	sessions, ok := m["sessions"].([]any)
 	if !ok || len(sessions) != 2 {
 		t.Fatalf("over-limit sessions = %v, want 2 active sessions", m["sessions"])

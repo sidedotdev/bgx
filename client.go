@@ -488,6 +488,7 @@ func failConcurrencyLimit(ns string, limit int, sessions []*daemon.Info) error {
 		"error": fmt.Sprintf("run: %s already has %d active session(s); concurrency limit is %d",
 			label, len(sessions), limit),
 		"code":     codeConcurrencyLimit,
+		"source":   errorSource,
 		"sessions": sessions,
 	})
 	os.Exit(1)

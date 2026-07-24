@@ -159,8 +159,10 @@ ignoring stale socket files left by crashed daemons.
 ## Error reporting
 
 Every command failure emits a single JSON object on stderr — never stdout —
-shaped `{"error": <message>, "code": <code>}` and exits non-zero. Codes form a
-small stable taxonomy (`invalid_argument`, `not_found`, `already_exists`,
+shaped `{"error": <message>, "code": <code>, "source": "bgx"}` and exits
+non-zero. The `source` key is always `"bgx"` so consumers can tell the error
+came from bgx itself rather than the wrapped command. Codes form a small stable
+taxonomy (`invalid_argument`, `not_found`, `already_exists`,
 `concurrency_limit`, `startup_failed`, `filesystem`, `internal`); the
 concurrency-limit payload additionally carries the offending `sessions`.
 urfave/cli usage errors and unknown commands are intercepted so parse failures

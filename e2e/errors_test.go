@@ -44,6 +44,9 @@ func TestErrorsAreJSONOnStderrWithCodes(t *testing.T) {
 			if m["code"] != tc.wantCode {
 				t.Fatalf("bgx %v error code = %v, want %q", tc.args, m["code"], tc.wantCode)
 			}
+			if m["source"] != "bgx" {
+				t.Fatalf("bgx %v error source = %v, want %q", tc.args, m["source"], "bgx")
+			}
 		})
 	}
 }

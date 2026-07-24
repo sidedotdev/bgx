@@ -39,6 +39,12 @@ intent_links:
       - client.go:recheckEndedRecord
       - e2e/run_test.go:TestRunFailsPromptlyWhenDaemonExitsBeforeStartup
       - e2e/run_test.go:FuzzRunShortLivedSessionExitCode
+  - intent: "#error-requriements"
+    code:
+      - errors.go
+      - client.go:failConcurrencyLimit
+      - e2e/errors_test.go:TestErrorsAreJSONOnStderrWithCodes
+      - e2e/run_test.go:TestRunEnforcesNamespaceConcurrencyLimit
   - intent: "#filesystem-requirements"
     code:
       - dirs.go

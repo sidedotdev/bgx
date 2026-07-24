@@ -44,10 +44,14 @@ func errorCode(err error) string {
 	return codeInternal
 }
 
+// errorSource marks JSON error payloads as originating from bgx itself, so
+// consumers can distinguish them from output of the wrapped command.
+const errorSource = "bgx"
+
 // emitErrorJSON writes the machine-readable error payload to stderr, keeping
 // stdout reserved for successful command output.
 func emitErrorJSON(code, msg string) {
-	_ = printJSON(os.Stderr, map[string]string{"error": msg, "code": code})
+	_ = printJSON(os.Stderr, map[string]string{"error": msg, "code": code, "source": errorSource})
 }
 
 // failJSON prints a JSON error object (message plus code) to stderr and exits
