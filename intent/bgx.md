@@ -26,8 +26,6 @@ intent_links:
       - attach.go:runAttach
       - e2e/attach_test.go:TestAttachReportsEndedAndMissingSessions
       - attachview.go:attachView
-      - attachview.go:detachHintStyle
-      - attachview.go:paint
       - e2e/attach_test.go:TestAttachShowDetachInstructionsReservesLine
       - e2e/attach_test.go:TestAttachShowDetachInstructionsOneRowTerminal
       - e2e/attach_test.go:TestAttachShowDetachInstructionsSurvivesDestructiveOutput
@@ -191,9 +189,13 @@ The following are requirements that are not covered in the (overview)[#bgx].
 
 - A daemon must outlive the client that starts it
 - Does not require a specific filesystem structure
+
+### Error Requriements
+
 - Errors always return json, even for commands that normally do not, with unique
   error codes included alongside the error message
 - Errors are always in stderr, not stdout
+- Errors include a `"source"` key set to `"bgx"` as an affordance
 
 ### `run` Requirements
 
