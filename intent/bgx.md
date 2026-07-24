@@ -160,6 +160,8 @@ But is customized for our needs:
    - Detach with ctrl+\
    - Closes automatically when session ends, resetting the cursor but not the
      entire terminal state
+   - Showing detach instructions means a line of the terminal is reserved by the
+     client for showing how to detach. This line is cleared when session ends.
 - send <id> <text...>
    - Send raw input to session PTY without attaching
 - list|ls
