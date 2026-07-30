@@ -3,6 +3,7 @@ intent_links:
   - intent: "#bgx"
     code:
       - main.go
+      - cmd/bgx/main.go
       - daemon/daemon.go
       - daemon/attach.go:serveAttach
       - scrollback/store.go
@@ -13,7 +14,7 @@ intent_links:
       - client.go
   - intent: "#commands"
     code:
-      - main.go:newApp
+      - main.go:Command
       - client.go:runAction
       - client.go:waitAction
       - client.go:killAction
@@ -53,6 +54,7 @@ intent_links:
       - e2e/filesystem_test.go
   - intent: "#testing--verification"
     code:
+      - e2e/main_test.go:run
       - e2e/run_test.go
       - e2e/kill_send_history_test.go
       - e2e/attach_test.go
@@ -61,6 +63,7 @@ intent_links:
       - e2e/filesystem_test.go
   - intent: "#implementation"
     code:
+      - cmd/bgx/main.go
       - main.go:daemonCommand
       - daemon/daemon.go:Serve
       - daemon/daemon.go:pumpOutput

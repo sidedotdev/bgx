@@ -1,7 +1,14 @@
 package main
 
-import bgx "github.com/sidedotdev/bgx"
+import (
+	"context"
+	"os"
+
+	"github.com/sidedotdev/bgx"
+)
 
 func main() {
-	bgx.Main()
+	if err := bgx.Run(context.Background(), os.Args); err != nil {
+		os.Exit(1)
+	}
 }

@@ -16,14 +16,22 @@ import (
 // version is the bgx release version, overridable at build time via -ldflags.
 var version = "0.0.0-dev"
 
+// Main executes bgx using the process arguments.
 func Main() {
-	if err := newApp().Run(context.Background(), os.Args); err != nil {
-		emitErrorJSON(errorCode(err), err.Error())
-		os.Exit(1)
-	}
+	_ = Run(context.Background(), os.Args)
 }
 
-func newApp() *cli.Command {
+// Run executes the bgx command and emits machine-readable errors.
+func Run(ctx context.Context, args []string) error {
+	if err := Command().Run(ctx, args); err != nil {
+		emitErrorJSON(errorCode(err), err.Error())
+		return err
+	}
+	return nil
+}
+
+// Command returns a new urfave/cli command configured with all bgx subcommands.
+func Command() *cli.Command {
 	root := &cli.Command{
 		Name:        "bgx",
 		Usage:       "manage async terminal sessions",
