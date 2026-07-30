@@ -36,7 +36,7 @@ func run(m *testing.M) int {
 	defer os.RemoveAll(dir)
 
 	binPath = filepath.Join(dir, "bgx")
-	build := exec.Command("go", "build", "-o", binPath, ".")
+	build := exec.Command("go", "build", "-o", binPath, "./cmd/bgx")
 	build.Dir = ".."
 	build.Stderr = os.Stderr
 	build.Stdout = os.Stdout

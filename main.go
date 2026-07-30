@@ -1,4 +1,4 @@
-package main
+package bgx
 
 import (
 	"context"
@@ -16,7 +16,7 @@ import (
 // version is the bgx release version, overridable at build time via -ldflags.
 var version = "0.0.0-dev"
 
-func main() {
+func Main() {
 	if err := newApp().Run(context.Background(), os.Args); err != nil {
 		emitErrorJSON(errorCode(err), err.Error())
 		os.Exit(1)
@@ -24,86 +24,21 @@ func main() {
 }
 
 func newApp() *cli.Command {
-	// run stops parsing flags after the session id so the command that follows
-	// keeps its own flags (e.g. "sh -c").
-	stopAfterID := 1
 	root := &cli.Command{
-		Name:  "bgx",
-		Usage: "manage async terminal sessions",
-		// A custom JSON version subcommand replaces the built-in plain version flag.
+		Name:        "bgx",
+		Usage:       "manage async terminal sessions",
 		HideVersion: true,
 		Commands: []*cli.Command{
-			{
-				Name:         "run",
-				Usage:        "run a command async in a new session",
-				ArgsUsage:    "[--overwrite-id] [--metadata key=value...] <id> <command...>",
-				StopOnNthArg: &stopAfterID,
-				Flags: []cli.Flag{
-					&cli.BoolFlag{Name: "overwrite-id"},
-					&cli.StringSliceFlag{Name: "metadata"},
-					&cli.IntFlag{Name: "head-size"},
-					&cli.IntFlag{Name: "tail-size"},
-					&cli.StringFlag{Name: "storage"},
-					&cli.StringFlag{Name: "storage-path"},
-					&cli.IntFlag{Name: "retention", Sources: cli.EnvVars("BGX_RETENTION")},
-					&cli.IntFlag{Name: "concurrency", Value: defaultConcurrency, Sources: cli.EnvVars("BGX_CONCURRENCY")},
-				},
-				Action: withDirs(runAction),
-			},
-			{
-				Name:      "wait",
-				Usage:     "wait for a session to finish and return its exit code",
-				ArgsUsage: "<id>",
-				Action:    withDirs(waitAction),
-			},
-			{
-				Name:      "kill",
-				Usage:     "kill a running session",
-				ArgsUsage: "<id>",
-				Action:    withDirs(killAction),
-			},
-			{
-				Name:      "history",
-				Usage:     "print the scrollback history of a session",
-				ArgsUsage: "<id>",
-				Action:    withDirs(historyAction),
-			},
-			{
-				Name:      "attach",
-				Usage:     "attach to a running session",
-				ArgsUsage: "[--show-detach-instructions] <id>",
-				Flags: []cli.Flag{
-					&cli.BoolFlag{Name: "show-detach-instructions"},
-				},
-				Action: withDirs(attachAction),
-			},
-			{
-				Name:      "send",
-				Usage:     "send raw input to a session PTY without attaching",
-				ArgsUsage: "<id> <text...>",
-				Action:    withDirs(sendAction),
-			},
-			{
-				Name:      "info",
-				Usage:     "print metadata about a session",
-				ArgsUsage: "<id>",
-				Action:    withDirs(infoAction),
-			},
-			{
-				Name:    "list",
-				Aliases: []string{"ls"},
-				Usage:   "list sessions",
-				Flags: []cli.Flag{
-					&cli.StringSliceFlag{Name: "metadata"},
-				},
-				Action: withDirs(listAction),
-			},
-			{
-				Name:   "version",
-				Usage:  "print version and environment info",
-				Action: withDirs(versionAction),
-			},
-			daemonCommand(),
+			RunCommand(),
+			WaitCommand(),
+			KillCommand(),
+			HistoryCommand(),
+			AttachCommand(),
+			SendCommand(),
+			InfoCommand(),
+			ListCommand(),
+			VersionCommand(),
+			DaemonCommand(),
 		},
 	}
 	applyJSONUsageErrors(root)
@@ -143,9 +78,10 @@ func printJSON(w io.Writer, v any) error {
 	return json.NewEncoder(w).Encode(v)
 }
 
-// daemonCommand is the hidden entry point bgx re-execs to run a detached
-// session daemon. It is not meant for direct use.
-func daemonCommand() *cli.Command {
+// DaemonCommand returns the hidden entry point bgx re-execs to run a detached
+// session daemon. It is exported so library consumers can assemble the same
+// complete command tree as the bgx executable.
+func DaemonCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "__daemon",
 		Hidden:    true,
