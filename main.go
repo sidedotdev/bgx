@@ -1,4 +1,4 @@
-package main
+package bgx
 
 import (
 	"context"
@@ -16,14 +16,17 @@ import (
 // version is the bgx release version, overridable at build time via -ldflags.
 var version = "0.0.0-dev"
 
-func main() {
-	if err := newApp().Run(context.Background(), os.Args); err != nil {
+// Run executes the bgx command and emits machine-readable errors.
+func Run(ctx context.Context, args []string) error {
+	if err := Command().Run(ctx, args); err != nil {
 		emitErrorJSON(errorCode(err), err.Error())
-		os.Exit(1)
+		return err
 	}
+	return nil
 }
 
-func newApp() *cli.Command {
+// Command returns a new urfave/cli command configured with all bgx subcommands.
+func Command() *cli.Command {
 	// run stops parsing flags after the session id so the command that follows
 	// keeps its own flags (e.g. "sh -c").
 	stopAfterID := 1

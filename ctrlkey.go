@@ -1,4 +1,4 @@
-package main
+package bgx
 
 // Portions of this file are ported from zmx
 // (https://github.com/neurosnap/zmx); see LICENSE-zmx for its license.

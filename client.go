@@ -1,4 +1,4 @@
-package main
+package bgx
 
 // The socket-path scheme and stale-socket cleanup here are ported from zmx
 // (https://github.com/neurosnap/zmx); see LICENSE-zmx for its license.

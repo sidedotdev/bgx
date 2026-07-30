@@ -170,9 +170,9 @@ jobs:
           # shipped tag rather than the in-source dev placeholder.
           ldflags=""
           if [ "$REF_TYPE" = tag ]; then
-            ldflags="-X main.version=${REF_NAME#v}"
+            ldflags="-X github.com/sidedotdev/bgx.version=${REF_NAME#v}"
           fi
-          go build -ldflags "$ldflags" -o "dist/bgx-${{ matrix.goos }}-${{ matrix.goarch }}" .
+          go build -ldflags "$ldflags" -o "dist/bgx-${{ matrix.goos }}-${{ matrix.goarch }}" ./cmd/bgx
 
       # Run the full black-box suite against the exact static binary that gets
       # uploaded, verifying the release artifact itself end to end.
