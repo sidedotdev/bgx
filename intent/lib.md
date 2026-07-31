@@ -4,13 +4,9 @@ intent_links:
     code:
       - main.go:Command
       - main.go:Run
-      - main.go:Main
-      - main.go:DaemonCommand
       - attach.go
       - attachview.go
       - client.go
-      - commands.go
-      - commands_test.go:TestExportedSubcommands
       - ctrlkey.go
       - ctrlkey_test.go
       - dirs.go
@@ -23,5 +19,13 @@ intent_links:
 
 # Lib
 
-`bgx` as a lib at minimum exposes the urfave/cli command, subcommands and their
-handlers publicly, with the intent being for other libs to be able to trivially embed these within their binaries when needed.
+## Command-level
+
+`bgx` exposes the urfave/cli command, subcommands and their handlers publicly,
+with the intent being for other libs to be able to trivially embed these within
+their binaries when needed.
+
+## Lower-level
+
+Useful utilities to interact as a client of bgx streams is provided. This
+includes:

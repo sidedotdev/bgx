@@ -36,7 +36,7 @@ directory, enabling grep debugging.
   - darwin amd64
   - darwin arm64
 - On each platform:
-  - Runs unit tests
+  - Runs unit tests & lints
   - Creates static builds of the cli tool
   - Runs full suite of black-box tests on static build
   - Uploads the build to the release
