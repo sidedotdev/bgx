@@ -1,58 +1,68 @@
-package bgx_test
+package bgx
 
-import (
-	"testing"
+import "testing"
 
-	bgx "github.com/sidedotdev/bgx"
-	cli "github.com/urfave/cli/v3"
-)
-
-func TestExportedSubcommands(t *testing.T) {
-	tests := []struct {
-		name    string
-		aliases []string
-		hidden  bool
-		new     func() *cli.Command
-	}{
-		{name: "run", new: bgx.RunCommand},
-		{name: "wait", new: bgx.WaitCommand},
-		{name: "kill", new: bgx.KillCommand},
-		{name: "history", new: bgx.HistoryCommand},
-		{name: "attach", new: bgx.AttachCommand},
-		{name: "send", new: bgx.SendCommand},
-		{name: "info", new: bgx.InfoCommand},
-		{name: "list", aliases: []string{"ls"}, new: bgx.ListCommand},
-		{name: "version", new: bgx.VersionCommand},
-		{name: "__daemon", hidden: true, new: bgx.DaemonCommand},
+func TestRootCommandTree(t *testing.T) {
+	root := rootCommand()
+	if root == nil {
+		t.Fatal("rootCommand returned nil")
+	}
+	if root.Name != "bgx" {
+		t.Fatalf("Name = %q, want %q", root.Name, "bgx")
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			first := tt.new()
-			second := tt.new()
-			if first == nil {
-				t.Fatal("constructor returned nil")
+	wantAliases := map[string][]string{
+		"run":     nil,
+		"wait":    nil,
+		"kill":    nil,
+		"history": nil,
+		"attach":  nil,
+		"bridge":  nil,
+		"send":    nil,
+		"info":    nil,
+		"list":    {"ls"},
+		"version": nil,
+	}
+	for _, sub := range root.Commands {
+		aliases, ok := wantAliases[sub.Name]
+		if !ok {
+			t.Errorf("unexpected subcommand %q", sub.Name)
+			continue
+		}
+		delete(wantAliases, sub.Name)
+		if sub.Hidden {
+			t.Errorf("subcommand %q is hidden", sub.Name)
+		}
+		if sub.Action == nil {
+			t.Errorf("subcommand %q has nil Action", sub.Name)
+		}
+		if len(sub.Aliases) != len(aliases) {
+			t.Errorf("subcommand %q Aliases = %v, want %v", sub.Name, sub.Aliases, aliases)
+			continue
+		}
+		for i := range aliases {
+			if sub.Aliases[i] != aliases[i] {
+				t.Errorf("subcommand %q Aliases[%d] = %q, want %q", sub.Name, i, sub.Aliases[i], aliases[i])
 			}
-			if first == second {
-				t.Fatal("constructor reused mutable command state")
-			}
-			if first.Name != tt.name {
-				t.Errorf("Name = %q, want %q", first.Name, tt.name)
-			}
-			if first.Action == nil {
-				t.Error("Action is nil")
-			}
-			if first.Hidden != tt.hidden {
-				t.Errorf("Hidden = %t, want %t", first.Hidden, tt.hidden)
-			}
-			if len(first.Aliases) != len(tt.aliases) {
-				t.Fatalf("Aliases = %v, want %v", first.Aliases, tt.aliases)
-			}
-			for i := range tt.aliases {
-				if first.Aliases[i] != tt.aliases[i] {
-					t.Errorf("Aliases[%d] = %q, want %q", i, first.Aliases[i], tt.aliases[i])
-				}
-			}
-		})
+		}
+	}
+	for name := range wantAliases {
+		t.Errorf("missing subcommand %q", name)
+	}
+}
+
+// The daemon entry point is the InterceptDaemon env marker, not a CLI command,
+// so the hidden __daemon subcommand must stay gone from the tree.
+func TestRootCommandHasNoDaemonSubcommand(t *testing.T) {
+	for _, sub := range rootCommand().Commands {
+		if sub.Name == "__daemon" {
+			t.Fatal("root command still mounts the hidden __daemon subcommand")
+		}
+	}
+}
+
+func TestRootCommandReturnsIndependentInstances(t *testing.T) {
+	if rootCommand() == rootCommand() {
+		t.Fatal("rootCommand returned the same mutable command instance twice")
 	}
 }

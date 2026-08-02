@@ -12,9 +12,10 @@ intent_links:
       - vtscan/vtscan.go
       - vt/vt.go
       - client.go
+      - transport.go:Bridge
   - intent: "#commands"
     code:
-      - main.go:Command
+      - main.go:rootCommand
       - client.go:runAction
       - client.go:waitAction
       - client.go:killAction
@@ -22,9 +23,21 @@ intent_links:
       - client.go:sendAction
       - client.go:infoAction
       - client.go:listAction
+      - commands.go:attachCommand
+      - commands.go:bridgeCommand
       - attach.go:attachAction
-      - attach.go:failAttachUnavailable
-      - attach.go:runAttach
+      - attach.go:failSessionUnavailable
+      - attach.go:transportConn
+      - bridge.go:bridgeAction
+      - client_attach.go:runTerminalAttach
+      - e2e/bridge_test.go:TestBridgeForwardsAttachProtocolVerbatim
+      - e2e/bridge_test.go:TestAttachViaTransportBridgesRemoteSession
+      - e2e/bridge_test.go:TestBridgeReportsEndedAndMissingSessions
+      - e2e/bridge_test.go:TestAttachRejectsBothSSHAndVia
+      - e2e/bridge_test.go:TestAttachSSHExpandsToTransportCommand
+      - e2e/bridge_test.go:TestAttachViaReportsRemoteMissingAndEndedSessions
+      - errors.go:codeBridgeFailed
+      - commands_test.go:TestRootCommandTree
       - e2e/attach_test.go:TestAttachReportsEndedAndMissingSessions
       - attachview.go:attachView
       - e2e/attach_test.go:TestAttachShowDetachInstructionsReservesLine
@@ -58,13 +71,14 @@ intent_links:
       - e2e/run_test.go
       - e2e/kill_send_history_test.go
       - e2e/attach_test.go
+      - e2e/bridge_test.go
       - e2e/list_test.go
       - e2e/version_test.go
       - e2e/filesystem_test.go
   - intent: "#implementation"
     code:
       - cmd/bgx/main.go
-      - main.go:daemonCommand
+      - daemonize.go:InterceptDaemon
       - daemon/daemon.go:Serve
       - daemon/daemon.go:pumpOutput
       - daemon/protocol.go

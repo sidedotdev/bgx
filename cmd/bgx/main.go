@@ -8,6 +8,7 @@ import (
 )
 
 func main() {
+	bgx.InterceptDaemon()
 	if err := bgx.Run(context.Background(), os.Args); err != nil {
 		os.Exit(1)
 	}

@@ -2,9 +2,9 @@
 intent_links:
   - intent: "#daemonization"
     code:
-      - main.go:daemonCommand
-      - main.go:daemonAction
+      - daemonize.go:InterceptDaemon
       - client.go:spawnDaemon
+      - cmd/bgx/main.go
       - daemon/daemon.go:persistSpawnError
   - intent: "#socket-protocol"
     code:
@@ -21,7 +21,7 @@ intent_links:
       - daemon/attach.go:serveAttach
       - daemon/daemon.go:pumpOutput
       - daemon/daemon_test.go:TestAttachSnapshotStreamCoversEntireOutput
-      - attach.go:runAttach
+      - client_attach.go:runTerminalAttach
       - attachview.go:attachView
       - attachview.go:paint
       - e2e/attach_test.go:TestAttachShowDetachInstructionsSurvivesDestructiveOutput

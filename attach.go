@@ -5,231 +5,238 @@ package bgx
 // license.
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
-	"os/signal"
+	"os/exec"
+	"strings"
 	"sync"
-	"sync/atomic"
-	"syscall"
+	"time"
 
-	"github.com/sidedotdev/bgx/daemon"
 	cli "github.com/urfave/cli/v3"
-	"golang.org/x/term"
 )
+
+// errAttachSocketDial marks a failure to open the attach socket connection, so
+// the CLI can report the session as unavailable rather than as a protocol
+// failure.
+var errAttachSocketDial = errors.New("session socket dial failed")
 
 // attachAction connects to a running session, replays its current screen, and
 // bridges the local terminal to the session's PTY until the user detaches with
-// ctrl+\ (which keeps the session running).
-func attachAction(_ context.Context, cmd *cli.Command) error {
+// ctrl+\ (which keeps the session running). With --ssh or --via the session is
+// remote: a transport subprocess running `bgx bridge <id>` on the far side
+// stands in for the local socket connection.
+func attachAction(ctx context.Context, cmd *cli.Command) error {
 	id := cmd.Args().First()
 	if id == "" {
 		return failJSON(codeInvalidArgument, "attach: an id is required")
 	}
-	info, ok := liveInfo(id)
-	if !ok || !info.Running {
-		return failAttachUnavailable(id, ok && !info.Running)
+	showInstructions := cmd.Bool("show-detach-instructions")
+	sshHost := cmd.String("ssh")
+	var via []string
+	// Argument parsing stops at the id so --via can consume every following
+	// argument as the transport command; the other flags stay usable on either
+	// side of the id.
+	rest := cmd.Args().Slice()[1:]
+	for i := 0; i < len(rest); i++ {
+		switch rest[i] {
+		case "--show-detach-instructions":
+			showInstructions = true
+		case "--ssh":
+			if i == len(rest)-1 {
+				return failJSON(codeInvalidArgument, "attach: --ssh requires a host")
+			}
+			i++
+			sshHost = rest[i]
+		case "--via":
+			if i == len(rest)-1 {
+				return failJSON(codeInvalidArgument, "attach: --via requires a command")
+			}
+			via = rest[i+1:]
+			i = len(rest)
+		default:
+			return failJSON(codeInvalidArgument, "attach: unexpected argument %q", rest[i])
+		}
+	}
+	if sshHost != "" && len(via) > 0 {
+		return failJSON(codeInvalidArgument, "attach: --ssh and --via are mutually exclusive")
+	}
+	if sshHost != "" {
+		via = []string{"ssh", sshHost}
 	}
 
-	conn, err := net.Dial("unix", socketPath(id))
-	if err != nil {
+	var dial Dialer
+	var transport *transportConn
+	if len(via) > 0 {
+		// The transport command (e.g. ssh) runs `bgx bridge <id>` on the far
+		// side, so its stdio carries the same one-connection attach protocol a
+		// local socket would.
+		argv := append(append([]string(nil), via...), "bgx", "bridge", id)
+		dial = func(ctx context.Context) (io.ReadWriteCloser, error) {
+			tc, err := startTransportProcess(ctx, argv)
+			if err != nil {
+				return nil, err
+			}
+			transport = tc
+			return tc, nil
+		}
+	} else {
+		info, ok := liveInfo(id)
+		if !ok || !info.Running {
+			return failSessionUnavailable("attach", id, ok && !info.Running)
+		}
+		dial = func(ctx context.Context) (io.ReadWriteCloser, error) {
+			var dialer net.Dialer
+			conn, err := dialer.DialContext(ctx, "unix", socketPath(id))
+			if err != nil {
+				return nil, fmt.Errorf("%w: %v", errAttachSocketDial, err)
+			}
+			return conn, nil
+		}
+	}
+
+	var options []AttachOption
+	if showInstructions {
+		options = append(options, WithDetachInstructions())
+	}
+	if err := NewClient(dial).Attach(ctx, NewProcessTerminal(), options...); err != nil {
+		// A remote bgx bridge reports why the session is unavailable on the
+		// transport's stderr; surface it as the single local error so the
+		// remote session_not_found/session_ended semantics are preserved.
+		if transport != nil {
+			if code, msg, ok := transport.remoteBGXError(); ok {
+				return failJSON(code, "%s", msg)
+			}
+		}
 		// The session can end between the liveness check and the dial.
-		return failAttachUnavailable(id, false)
-	}
-	defer conn.Close()
-
-	if err := json.NewEncoder(conn).Encode(daemon.Request{Op: "attach"}); err != nil {
+		if errors.Is(err, errAttachSocketDial) {
+			return failSessionUnavailable("attach", id, false)
+		}
+		var respErr *ResponseError
+		if errors.As(err, &respErr) {
+			return failJSON(codeAttachFailed, "attach: %s", respErr.Message)
+		}
+		if transport != nil {
+			if detail := transport.stderrOutput(); detail != "" {
+				return failJSON(codeAttachFailed, "attach: %v: %s", err, detail)
+			}
+		}
 		return failJSON(codeAttachFailed, "attach: %v", err)
-	}
-	// Read exactly the response line so its trailing newline is consumed before
-	// the connection switches to binary frames.
-	br := bufio.NewReader(conn)
-	line, err := br.ReadBytes('\n')
-	if err != nil && len(line) == 0 {
-		return failJSON(codeAttachFailed, "attach: %v", err)
-	}
-	var resp daemon.Response
-	if err := json.Unmarshal(line, &resp); err != nil {
-		return failJSON(codeAttachFailed, "attach: %v", err)
-	}
-	if !resp.OK {
-		return failJSON(codeAttachFailed, "attach: %s", resp.Error)
-	}
-
-	return runAttach(conn, br, cmd.Bool("show-detach-instructions"))
-}
-
-// failAttachUnavailable reports the distinct reason a session cannot be
-// attached to: it either already ended (a daemon answered as not running, or a
-// persisted ended record exists) or it never existed.
-func failAttachUnavailable(id string, knownEnded bool) error {
-	if knownEnded {
-		return failJSON(codeSessionEnded, "attach: session %q has already ended", id)
-	}
-	if _, ended := endedRecord(id); ended {
-		return failJSON(codeSessionEnded, "attach: session %q has already ended", id)
-	}
-	return failJSON(codeSessionNotFound, "attach: session %q does not exist", id)
-}
-
-// runAttach drives the interactive bridge over an established attach
-// connection: r reads inbound frames while conn is written for outbound ones.
-// When showDetachInstructions is set, the bottom line of the local terminal is
-// reserved for a detach hint and the session is told a one-row-shorter size.
-func runAttach(conn net.Conn, r io.Reader, showDetachInstructions bool) error {
-	stdinFd := int(os.Stdin.Fd())
-	if term.IsTerminal(stdinFd) {
-		// Raw mode disables signal generation, so ctrl+\ arrives as a literal
-		// byte we can intercept as the detach key instead of raising SIGQUIT.
-		old, err := term.MakeRaw(stdinFd)
-		if err == nil {
-			defer term.Restore(stdinFd, old)
-		}
-	}
-
-	// stdout is shared between the frame reader, the view painter and the exit
-	// reset, so writes are serialized to keep escape sequences intact.
-	var outMu sync.Mutex
-	writeOut := func(s string) {
-		outMu.Lock()
-		defer outMu.Unlock()
-		os.Stdout.WriteString(s)
-	}
-
-	writeOut("\x1b[2J\x1b[H")
-
-	// Reserving a line means rendering session output locally instead of
-	// forwarding it, which requires knowing the terminal size.
-	var view *attachView
-	if showDetachInstructions && term.IsTerminal(stdinFd) {
-		if cols, rows, err := term.GetSize(stdinFd); err == nil && cols > 0 && rows > 0 {
-			view = newAttachView(writeOut, uint16(cols), uint16(rows))
-		}
-	}
-
-	var detached, sessionEnded atomic.Bool
-	// The exit reset depends on the cause: a ctrl+\ detach does a full terminal
-	// reset to clear the session state the replay left on the local screen,
-	// while a session end resets only the cursor so the final rendered output
-	// stays visible. A plain connection error falls back to a full reset.
-	defer func() {
-		// Stop painting before the exit sequences so no repaint lands after them.
-		if view != nil {
-			view.close()
-		}
-		if sessionEnded.Load() && !detached.Load() {
-			// Release the scroll region and clear the reserved line so the
-			// detach hint doesn't linger after the session's final output,
-			// restoring the cursor so the final state matches a flagless run.
-			if view != nil {
-				if row := view.reservedRow(); row > 0 {
-					writeOut(fmt.Sprintf("\x1b7\x1b[r\x1b[%d;1H\x1b[2K\x1b8", row))
-				}
-			}
-			writeOut("\x1b[?25h\x1b[0m")
-			return
-		}
-		writeOut("\x1bc")
-	}()
-
-	var writeMu sync.Mutex
-	send := func(tag daemon.FrameTag, payload []byte) error {
-		writeMu.Lock()
-		defer writeMu.Unlock()
-		return daemon.WriteFrame(conn, tag, payload)
-	}
-
-	sendSize := func() {
-		cols, rows, err := term.GetSize(stdinFd)
-		if err != nil || cols <= 0 || rows <= 0 {
-			return
-		}
-		if view != nil {
-			rows = int(view.setSize(uint16(cols), uint16(rows)))
-			if rows <= 0 {
-				return
-			}
-		}
-		_ = send(daemon.FrameResize, daemon.EncodeResize(uint16(rows), uint16(cols)))
-	}
-	sendSize()
-
-	winch := make(chan os.Signal, 1)
-	signal.Notify(winch, syscall.SIGWINCH)
-	defer signal.Stop(winch)
-	go func() {
-		for range winch {
-			sendSize()
-		}
-	}()
-
-	readErr := make(chan struct{})
-	go func() {
-		defer close(readErr)
-		for {
-			tag, payload, err := daemon.ReadFrame(r)
-			if err != nil {
-				return
-			}
-			switch tag {
-			case daemon.FrameOutput:
-				if view != nil {
-					view.feed(payload)
-					break
-				}
-				outMu.Lock()
-				os.Stdout.Write(payload)
-				outMu.Unlock()
-			case daemon.FrameResync:
-				if view != nil {
-					view.resync(payload)
-					break
-				}
-				outMu.Lock()
-				os.Stdout.Write(payload)
-				outMu.Unlock()
-			case daemon.FrameResize:
-				sendSize()
-			case daemon.FrameEnded:
-				sessionEnded.Store(true)
-				return
-			}
-		}
-	}()
-
-	stdinDone := make(chan struct{})
-	go func() {
-		defer close(stdinDone)
-		buf := make([]byte, 64<<10)
-		var scanner detachScanner
-		for {
-			n, err := os.Stdin.Read(buf)
-			if n > 0 {
-				forward, detach := scanner.feed(buf[:n])
-				if len(forward) > 0 {
-					if werr := send(daemon.FrameInput, forward); werr != nil {
-						return
-					}
-				}
-				if detach {
-					detached.Store(true)
-					_ = send(daemon.FrameDetach, nil)
-					return
-				}
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-
-	select {
-	case <-readErr:
-	case <-stdinDone:
 	}
 	return nil
+}
+
+// failSessionUnavailable reports the distinct reason a session cannot be
+// attached or bridged to: it either already ended (a daemon answered as not
+// running, or a persisted ended record exists) or it never existed.
+func failSessionUnavailable(op, id string, knownEnded bool) error {
+	if knownEnded {
+		return failJSON(codeSessionEnded, "%s: session %q has already ended", op, id)
+	}
+	if _, ended := endedRecord(id); ended {
+		return failJSON(codeSessionEnded, "%s: session %q has already ended", op, id)
+	}
+	return failJSON(codeSessionNotFound, "%s: session %q does not exist", op, id)
+}
+
+// transportShutdownGrace bounds how long a transport subprocess may take to
+// exit on its own after its stdin closes before it is killed.
+const transportShutdownGrace = 2 * time.Second
+
+// transportConn adapts a transport subprocess (e.g. ssh) to the single stream
+// an attach connection consumes: writes feed its stdin, reads drain its
+// stdout, and its stderr is captured so a remote bgx error can be surfaced as
+// the one local error rather than leaking a duplicate JSON error.
+type transportConn struct {
+	cmd    *exec.Cmd
+	stdin  *os.File
+	stdout *os.File
+	stderr *bytes.Buffer
+
+	closeOnce sync.Once
+	closeErr  error
+}
+
+// startTransportProcess launches argv with explicit pipes (rather than
+// exec's managed ones) so closing and waiting never race the frame reader.
+func startTransportProcess(ctx context.Context, argv []string) (*transportConn, error) {
+	stdinR, stdinW, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		stdinR.Close()
+		stdinW.Close()
+		return nil, err
+	}
+	stderr := &bytes.Buffer{}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Stdin = stdinR
+	cmd.Stdout = stdoutW
+	cmd.Stderr = stderr
+	if err := cmd.Start(); err != nil {
+		stdinR.Close()
+		stdinW.Close()
+		stdoutR.Close()
+		stdoutW.Close()
+		return nil, fmt.Errorf("start transport %q: %w", argv[0], err)
+	}
+	stdinR.Close()
+	stdoutW.Close()
+	return &transportConn{cmd: cmd, stdin: stdinW, stdout: stdoutR, stderr: stderr}, nil
+}
+
+func (c *transportConn) Read(p []byte) (int, error)  { return c.stdout.Read(p) }
+func (c *transportConn) Write(p []byte) (int, error) { return c.stdin.Write(p) }
+
+// Close signals EOF to the transport via its stdin, gives it a grace period to
+// exit (letting a remote error flush into the captured stderr), then kills it.
+// The stdout side is closed last so a still-blocked reader unblocks.
+func (c *transportConn) Close() error {
+	c.closeOnce.Do(func() {
+		_ = c.stdin.Close()
+		waited := make(chan error, 1)
+		go func() { waited <- c.cmd.Wait() }()
+		select {
+		case err := <-waited:
+			c.closeErr = err
+		case <-time.After(transportShutdownGrace):
+			_ = c.cmd.Process.Kill()
+			c.closeErr = <-waited
+		}
+		_ = c.stdout.Close()
+	})
+	return c.closeErr
+}
+
+// stderrOutput returns the transport's captured stderr. Only call it after
+// Close, whose Wait joins exec's goroutine copying into the buffer.
+func (c *transportConn) stderrOutput() string {
+	return strings.TrimSpace(c.stderr.String())
+}
+
+// remoteBGXError reports the last JSON error a remote bgx wrote to the
+// transport's stderr, identified by its "source":"bgx" marker. Only call it
+// after Close.
+func (c *transportConn) remoteBGXError() (code, message string, ok bool) {
+	for _, line := range strings.Split(c.stderr.String(), "\n") {
+		var payload struct {
+			Code   string `json:"code"`
+			Error  string `json:"error"`
+			Source string `json:"source"`
+		}
+		if err := json.Unmarshal([]byte(line), &payload); err != nil {
+			continue
+		}
+		if payload.Source == "bgx" && payload.Code != "" && payload.Error != "" {
+			code, message, ok = payload.Code, payload.Error, true
+		}
+	}
+	return code, message, ok
 }

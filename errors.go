@@ -22,6 +22,7 @@ const (
 	codeSessionNotFound  = "session_not_found"
 	codeSessionEnded     = "session_ended"
 	codeAttachFailed     = "attach_failed"
+	codeBridgeFailed     = "bridge_failed"
 )
 
 // codedError attaches a machine-readable code to an error so the top-level

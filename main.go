@@ -8,45 +8,41 @@ import (
 	"os"
 	"strings"
 
-	"github.com/sidedotdev/bgx/daemon"
-	"github.com/sidedotdev/bgx/scrollback"
 	cli "github.com/urfave/cli/v3"
 )
 
 // version is the bgx release version, overridable at build time via -ldflags.
 var version = "0.0.0-dev"
 
-// Main executes bgx using the process arguments.
-func Main() {
-	_ = Run(context.Background(), os.Args)
-}
-
 // Run executes the bgx command and emits machine-readable errors.
 func Run(ctx context.Context, args []string) error {
-	if err := Command().Run(ctx, args); err != nil {
+	if err := rootCommand().Run(ctx, args); err != nil {
 		emitErrorJSON(errorCode(err), err.Error())
 		return err
 	}
 	return nil
 }
 
-// Command returns a new urfave/cli command configured with all bgx subcommands.
-func Command() *cli.Command {
+// rootCommand returns a new urfave/cli command configured with all bgx
+// subcommands. The command tree is intentionally unexported: the public
+// library surface is typed-only and embedding binaries integrate via Run and
+// InterceptDaemon instead of mounting bgx commands.
+func rootCommand() *cli.Command {
 	root := &cli.Command{
 		Name:        "bgx",
 		Usage:       "manage async terminal sessions",
 		HideVersion: true,
 		Commands: []*cli.Command{
-			RunCommand(),
-			WaitCommand(),
-			KillCommand(),
-			HistoryCommand(),
-			AttachCommand(),
-			SendCommand(),
-			InfoCommand(),
-			ListCommand(),
-			VersionCommand(),
-			DaemonCommand(),
+			runCommand(),
+			waitCommand(),
+			killCommand(),
+			historyCommand(),
+			attachCommand(),
+			bridgeCommand(),
+			sendCommand(),
+			infoCommand(),
+			listCommand(),
+			versionCommand(),
 		},
 	}
 	applyJSONUsageErrors(root)
@@ -84,56 +80,6 @@ func notImplemented(_ context.Context, cmd *cli.Command) error {
 // printJSON writes v as a single line of JSON followed by a newline.
 func printJSON(w io.Writer, v any) error {
 	return json.NewEncoder(w).Encode(v)
-}
-
-// DaemonCommand returns the hidden entry point bgx re-execs to run a detached
-// session daemon. It is exported so library consumers can assemble the same
-// complete command tree as the bgx executable.
-func DaemonCommand() *cli.Command {
-	return &cli.Command{
-		Name:      "__daemon",
-		Hidden:    true,
-		Usage:     "internal: run a session daemon (not for direct use)",
-		ArgsUsage: "<command...>",
-		Flags: []cli.Flag{
-			&cli.StringFlag{Name: "id", Required: true},
-			&cli.StringFlag{Name: "socket", Required: true},
-			&cli.StringFlag{Name: "retention-dir"},
-			&cli.IntFlag{Name: "retention"},
-			&cli.IntFlag{Name: "head-size"},
-			&cli.IntFlag{Name: "tail-size"},
-			&cli.StringFlag{Name: "storage"},
-			&cli.StringFlag{Name: "storage-path"},
-			&cli.StringSliceFlag{Name: "metadata"},
-		},
-		Action: daemonAction,
-	}
-}
-
-func daemonAction(_ context.Context, cmd *cli.Command) error {
-	command := cmd.Args().Slice()
-	if len(command) == 0 {
-		return fmt.Errorf("__daemon: no command provided")
-	}
-	metadata, err := parseMetadata(cmd.StringSlice("metadata"))
-	if err != nil {
-		return err
-	}
-	cfg := daemon.Config{
-		ID:             cmd.String("id"),
-		Command:        command,
-		Metadata:       metadata,
-		SocketPath:     cmd.String("socket"),
-		RetentionDir:   cmd.String("retention-dir"),
-		RetentionCount: cmd.Int("retention"),
-		Scrollback: scrollback.Config{
-			HeadSize:    cmd.Int("head-size"),
-			TailSize:    cmd.Int("tail-size"),
-			Storage:     scrollback.StorageKind(cmd.String("storage")),
-			StoragePath: cmd.String("storage-path"),
-		},
-	}
-	return daemon.Serve(cfg)
 }
 
 // parseMetadata converts repeated "key=value" entries into a map.

@@ -2,7 +2,7 @@ package bgx
 
 import cli "github.com/urfave/cli/v3"
 
-func RunCommand() *cli.Command {
+func runCommand() *cli.Command {
 	stopAfterID := 1
 	return &cli.Command{
 		Name:         "run",
@@ -23,7 +23,7 @@ func RunCommand() *cli.Command {
 	}
 }
 
-func WaitCommand() *cli.Command {
+func waitCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "wait",
 		Usage:     "wait for a session to finish and return its exit code",
@@ -32,7 +32,7 @@ func WaitCommand() *cli.Command {
 	}
 }
 
-func KillCommand() *cli.Command {
+func killCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "kill",
 		Usage:     "kill a running session",
@@ -41,7 +41,7 @@ func KillCommand() *cli.Command {
 	}
 }
 
-func HistoryCommand() *cli.Command {
+func historyCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "history",
 		Usage:     "print the scrollback history of a session",
@@ -50,19 +50,33 @@ func HistoryCommand() *cli.Command {
 	}
 }
 
-func AttachCommand() *cli.Command {
+func attachCommand() *cli.Command {
+	// Parsing stops at the id so a trailing --via can consume everything after
+	// it as the transport command; attachAction parses those trailing flags.
+	stopAfterID := 1
 	return &cli.Command{
-		Name:      "attach",
-		Usage:     "attach to a running session",
-		ArgsUsage: "[--show-detach-instructions] <id>",
+		Name:         "attach",
+		Usage:        "attach to a running session",
+		ArgsUsage:    "[--ssh <host>] <id> [--show-detach-instructions] [--via <cmd...>]",
+		StopOnNthArg: &stopAfterID,
 		Flags: []cli.Flag{
 			&cli.BoolFlag{Name: "show-detach-instructions"},
+			&cli.StringFlag{Name: "ssh"},
 		},
 		Action: withDirs(attachAction),
 	}
 }
 
-func SendCommand() *cli.Command {
+func bridgeCommand() *cli.Command {
+	return &cli.Command{
+		Name:      "bridge",
+		Usage:     "forward one raw session connection over stdio",
+		ArgsUsage: "<id>",
+		Action:    withDirs(bridgeAction),
+	}
+}
+
+func sendCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "send",
 		Usage:     "send raw input to a session PTY without attaching",
@@ -71,7 +85,7 @@ func SendCommand() *cli.Command {
 	}
 }
 
-func InfoCommand() *cli.Command {
+func infoCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "info",
 		Usage:     "print metadata about a session",
@@ -80,7 +94,7 @@ func InfoCommand() *cli.Command {
 	}
 }
 
-func ListCommand() *cli.Command {
+func listCommand() *cli.Command {
 	return &cli.Command{
 		Name:    "list",
 		Aliases: []string{"ls"},
@@ -92,7 +106,7 @@ func ListCommand() *cli.Command {
 	}
 }
 
-func VersionCommand() *cli.Command {
+func versionCommand() *cli.Command {
 	return &cli.Command{
 		Name:   "version",
 		Usage:  "print version and environment info",

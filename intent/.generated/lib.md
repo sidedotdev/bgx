@@ -1,3 +1,69 @@
+---
+intent_links:
+  - intent: "#bgx-library"
+    code:
+      - main.go:rootCommand
+      - main.go:Run
+      - commands.go
+      - commands_test.go
+      - lib_test.go
+      - cmd/bgx/main.go
+  - intent: "#client"
+    code:
+      - client_api.go:Dialer
+      - client_api.go:Info
+      - client_api.go:ExitResult
+      - client_api.go:ResponseError
+      - client_api.go:ProtocolError
+      - client_api.go:Client
+      - client_api.go:NewClient
+      - client_api.go:Client.Info
+      - client_api.go:Client.Wait
+      - client_api.go:Client.Kill
+      - client_api.go:Client.Send
+      - client_api.go:Client.History
+      - client_attach.go:AttachOption
+      - client_attach.go:WithDetachInstructions
+      - client_attach.go:Client.Attach
+      - client_attach_test.go
+      - terminal.go:Terminal
+      - terminal.go:ProcessTerminal
+      - terminal.go:NewProcessTerminal
+      - client.go:sessionClient
+      - client_api_test.go
+  - intent: "#sessions"
+    code:
+      - start.go:StartOptions
+      - start.go:Start
+      - start.go:ErrSessionRunning
+      - start.go:ErrSessionExists
+      - start.go:ConcurrencyLimitError
+      - start.go:StartupError
+      - start_test.go
+      - sessions.go:ListOptions
+      - sessions.go:ListSessions
+      - sessions.go:ListRunning
+      - sessions.go:ListEnded
+      - sessions.go:EndedRecord
+      - sessions_test.go
+  - intent: "#daemonization"
+    code:
+      - daemonize.go:InterceptDaemon
+      - client.go:spawnDaemon
+      - cmd/bgx/main.go
+  - intent: "#bridging"
+    code:
+      - transport.go:Dial
+      - transport.go:Bridge
+      - transport_test.go
+  - intent: "#compatibility"
+    code:
+      - client_attach.go:Client.Attach
+      - client_attach_test.go:TestClientAttachIgnoresUnknownDaemonFrames
+      - daemon/attach.go:Session.serveAttach
+      - daemon/daemon_test.go:TestAttachIgnoresUnknownClientFrames
+---
+
 # bgx library
 
 bgx is importable as a Go library. The module root package

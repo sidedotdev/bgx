@@ -729,3 +729,57 @@ func TestSessionEndDeliversOutputThenCloses(t *testing.T) {
 	}
 	assertAttachTiles(t, 0, full, r.snapshot, r.stream)
 }
+func TestAttachIgnoresUnknownClientFrames(t *testing.T) {
+	socketPath, _, errCh := startSession(t, "unknown-attach-frame", []string{
+		"sh", "-c", `IFS= read -r line; printf 'ECHO:%s\n' "$line"`,
+	}, nil)
+
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("set deadline: %v", err)
+	}
+
+	br := bufio.NewReader(conn)
+	if err := json.NewEncoder(conn).Encode(Request{Op: "attach"}); err != nil {
+		t.Fatalf("attach encode: %v", err)
+	}
+	line, err := br.ReadBytes('\n')
+	if err != nil {
+		t.Fatalf("attach handshake: %v", err)
+	}
+	var resp Response
+	if err := json.Unmarshal(line, &resp); err != nil {
+		t.Fatalf("decode attach response: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("attach response: %+v", resp)
+	}
+
+	if err := WriteFrame(conn, FrameTag(255), []byte("future")); err != nil {
+		t.Fatalf("write unknown frame: %v", err)
+	}
+	if err := WriteFrame(conn, FrameInput, []byte("accepted\n")); err != nil {
+		t.Fatalf("write input frame: %v", err)
+	}
+
+	var output []byte
+	for !bytes.Contains(output, []byte("ECHO:accepted")) {
+		tag, payload, err := ReadFrame(br)
+		if err != nil {
+			t.Fatalf("read frame after unknown tag: %v", err)
+		}
+		if tag == FrameOutput || tag == FrameResync {
+			output = append(output, payload...)
+		}
+	}
+	if err := WriteFrame(conn, FrameDetach, nil); err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+
+	roundTrip(t, socketPath, Request{Op: "kill"})
+	<-errCh
+}
