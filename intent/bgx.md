@@ -131,6 +131,7 @@ But is customized for our needs:
 1. Sessions can be tagged with an arbitrary map of metadata when created, which
    is included when sessions are listed, or used as a filter directly against
    top-level metadata keys in the list subcommand.
+1. Supports bridging to remote sessions
 
 ## Commands
 
@@ -151,7 +152,7 @@ But is customized for our needs:
    - Any still-attached clients will also receive all such output before closing
      automatically
 - history <id>
-- attach <id> [--show-detach-instructions]
+- attach [--ssh <host>] <id> [--show-detach-instructions] [--via <cmd...>]
    - When initiated, detects if the session has already ended or doesn't exist,
      outputting the appropriate error for each case
    - Attaches to session, outputs "current" rendered terminal state
@@ -172,6 +173,13 @@ But is customized for our needs:
      client for showing how to detach.
      - This line is cleared when session ends.
      - The instruction line is styled with a separate subtle background color.
+    - `--via` is the unsugared form of `--ssh`, allowing more arbitrary commands
+      to be used. providing both is an error.
+  - bridge <id>`
+    - like `attach` except forwards the raw underlying frames, which allows a
+      remote client to attach to the underlying session through `bgx attach
+      --via ssh user@host`
+
 - send <id> <text...>
    - Send raw input to session PTY without attaching
 - list|ls

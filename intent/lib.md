@@ -17,15 +17,14 @@ intent_links:
       - .github/workflows/build.yml
 ---
 
-# Lib
+# bgx library
 
-## Command-level
+The bgx library allows any golang app to:
 
-`bgx` exposes the urfave/cli command, subcommands and their handlers publicly,
-with the intent being for other libs to be able to trivially embed these within
-their binaries when needed.
+1. Run and interact with local bgx sessions
+2. Run and interact with remote bgx sessions
+3. Bridge local bgx sessions to remote clients
 
-## Lower-level
-
-Useful utilities to interact as a client of bgx streams is provided. This
-includes:
+These capabilities together enable a library-based bgx client to interact with
+library-managed remote bgx sessions (i.e. via a remote go binary that isn't
+bgx), and all other combinations of library vs cli and local vs remote.
