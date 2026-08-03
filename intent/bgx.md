@@ -180,12 +180,12 @@ But is customized for our needs:
    - Client resizes are forwarded to the session PTY. When there are multiple,
      the smallest column size, and smallest row size across all clients (even if
      different clients) is forwarded, ensuring non-broken rendering
-   - Detach with ctrl+\
-   - Closes automatically when session ends, resetting the cursor but not the
-     entire terminal state
+   - Detach with ctrl+\, which resets the terminal to state prior to attaching
+   - Closes automatically when session ends or disconnects, resetting the cursor
+     but not the entire terminal state
    - Showing detach instructions means a line of the terminal is reserved by the
      client for showing how to detach.
-     - This line is cleared when session ends.
+     - This line is cleared when session ends or disconnects.
      - The instruction line is styled with a separate subtle background color.
     - `--via` is the unsugared form of `--ssh`, allowing more arbitrary commands
       to be used. providing both is an error.
