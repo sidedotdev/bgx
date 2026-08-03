@@ -102,7 +102,7 @@ The bgx API provides an interface that mirrors the cli. For example `bgx.Run` is
 the library equivalent of the `bgx run` cli subcommand. Option names should be
 mirrored as well.
 
-## Constrants
+## Constraints
 
 - The library is at least as powerful as the cli: the cli can do nothing that
   the library does not expose. This is not necessarily true vice versa.
