@@ -15,6 +15,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/creack/pty"
 
 	"github.com/sidedotdev/bgx/daemon"
 )
@@ -187,5 +190,106 @@ func TestAttachNegativeHandshakeReportsAttachFailed(t *testing.T) {
 	}
 	if !strings.Contains(msg, "session has ended") {
 		t.Fatalf("error = %q, want the daemon's handshake message", msg)
+	}
+}
+func TestAttachDisconnectClearsDetachInstructionsWithoutReset(t *testing.T) {
+	dir := runDir(t)
+	const id = "disconnected"
+	ln, _ := fakeSessionSocket(t, dir, id)
+
+	disconnect := make(chan struct{})
+	served := make(chan error, 1)
+	go func() {
+		infoConn, err := ln.Accept()
+		if err != nil {
+			served <- fmt.Errorf("accept info request: %w", err)
+			return
+		}
+		req, ok := readRequest(t, bufio.NewReader(infoConn))
+		if !ok || req.Op != "info" {
+			served <- errors.Join(
+				fmt.Errorf("first request = %+v, want info", req),
+				infoConn.Close(),
+			)
+			return
+		}
+		if err := json.NewEncoder(infoConn).Encode(daemon.Response{
+			OK:   true,
+			Info: &daemon.Info{ID: id, Running: true},
+		}); err != nil {
+			served <- errors.Join(fmt.Errorf("encode info response: %w", err), infoConn.Close())
+			return
+		}
+		if err := infoConn.Close(); err != nil {
+			served <- fmt.Errorf("close info connection: %w", err)
+			return
+		}
+
+		attachConn, err := ln.Accept()
+		if err != nil {
+			served <- fmt.Errorf("accept attach request: %w", err)
+			return
+		}
+		var serveErr error
+		defer func() {
+			served <- errors.Join(serveErr, attachConn.Close())
+		}()
+
+		req, ok = readRequest(t, bufio.NewReader(attachConn))
+		if !ok || req.Op != "attach" {
+			serveErr = fmt.Errorf("second request = %+v, want attach", req)
+			return
+		}
+		if err := json.NewEncoder(attachConn).Encode(daemon.Response{OK: true}); err != nil {
+			serveErr = fmt.Errorf("encode attach response: %w", err)
+			return
+		}
+		if err := daemon.WriteFrame(attachConn, daemon.FrameOutput, []byte("connected")); err != nil {
+			serveErr = fmt.Errorf("write attach output: %w", err)
+			return
+		}
+
+		<-disconnect
+	}()
+
+	c := startAttachE2EClient(
+		t,
+		dir,
+		id,
+		&pty.Winsize{Rows: 12, Cols: 40},
+		"--show-detach-instructions",
+	)
+	defer closePTY(t, c.ptmx)
+
+	c.waitFor(t, "connected")
+	c.waitFor(t, "detach: ctrl+\\")
+
+	close(disconnect)
+	select {
+	case <-c.readDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("attach client did not exit when the daemon disconnected")
+	}
+	select {
+	case err := <-c.readErr:
+		t.Fatalf("read attach pty: %v", err)
+	default:
+	}
+	if err := c.cmd.Wait(); err == nil {
+		t.Fatal("attach client succeeded despite daemon disconnect")
+	}
+	if err := <-served; err != nil {
+		t.Fatalf("serve fake session: %v", err)
+	}
+
+	out := c.output()
+	if strings.Contains(out, "\x1bc") {
+		t.Fatalf("daemon disconnect performed a full terminal reset; got %q", out)
+	}
+	if !strings.Contains(out, "\x1b[?25h\x1b[0m") {
+		t.Fatalf("daemon disconnect did not reset the cursor and style; got %q", out)
+	}
+	if rows := hintRows(renderScreen(t, out, 40, 12)); len(rows) != 0 {
+		t.Fatalf("detach hint still rendered on rows %v after daemon disconnect", rows)
 	}
 }

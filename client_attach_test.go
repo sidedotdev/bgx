@@ -673,6 +673,17 @@ func TestClientAttachReportsMalformedDaemonFrame(t *testing.T) {
 	if err := <-serverErr; err != nil {
 		t.Fatalf("attach server: %v", err)
 	}
+
+	output, entered, restored := terminal.snapshot()
+	if !entered || !restored {
+		t.Fatalf("raw lifecycle entered=%v restored=%v, want both true", entered, restored)
+	}
+	if strings.Contains(output, "\x1bc") {
+		t.Fatalf("terminal output = %q, remote frame failure must not fully reset terminal", output)
+	}
+	if !strings.Contains(output, "\x1b[?25h\x1b[0m") {
+		t.Fatalf("terminal output = %q, want cursor and style cleanup", output)
+	}
 }
 
 func TestClientAttachDetachIsSuccessful(t *testing.T) {
@@ -1459,5 +1470,60 @@ func TestClientAttachDetachRetainsUnexpectedSiblingOfShutdownFrameEOF(t *testing
 	err := bgx.NewClient(dial).Attach(context.Background(), terminal)
 	if !errors.Is(err, readErr) {
 		t.Fatalf("Attach error = %v, want unexpected frame read failure", err)
+	}
+}
+func TestClientAttachDisconnectClearsDetachInstructionsWithoutReset(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	dial := func(context.Context) (io.ReadWriteCloser, error) {
+		return clientConn, nil
+	}
+	frames := attachFrameServer(t, serverConn)
+
+	inputReader, inputWriter := io.Pipe()
+	t.Cleanup(func() {
+		if err := inputReader.Close(); err != nil {
+			t.Errorf("close terminal input reader: %v", err)
+		}
+		if err := inputWriter.Close(); err != nil {
+			t.Errorf("close terminal input writer: %v", err)
+		}
+	})
+	terminal := newTestTerminal(&contextPipeReader{inputReader})
+
+	result := make(chan error, 1)
+	go func() {
+		result <- bgx.NewClient(dial).Attach(
+			context.Background(),
+			terminal,
+			bgx.WithDetachInstructions(),
+		)
+	}()
+
+	expectResizeFrame(t, frames, 23, 80)
+	if err := serverConn.Close(); err != nil {
+		t.Fatalf("close attach server: %v", err)
+	}
+
+	select {
+	case err := <-result:
+		if !errors.Is(err, io.EOF) {
+			t.Fatalf("Attach error = %v, want EOF", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Attach did not return after remote disconnect")
+	}
+
+	output, entered, restored := terminal.snapshot()
+	if !entered || !restored {
+		t.Fatalf("raw lifecycle entered=%v restored=%v, want both true", entered, restored)
+	}
+	if strings.Contains(output, "\x1bc") {
+		t.Fatalf("terminal output = %q, remote disconnect must not fully reset terminal", output)
+	}
+	if !strings.Contains(output, "\x1b7\x1b[r\x1b[24;1H\x1b[2K\x1b8") {
+		t.Fatalf("terminal output = %q, want reserved detach row cleared", output)
+	}
+	if !strings.Contains(output, "\x1b[?25h\x1b[0m") {
+		t.Fatalf("terminal output = %q, want cursor and style cleanup", output)
 	}
 }

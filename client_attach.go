@@ -237,13 +237,14 @@ func runTerminalAttach(
 
 	var view *attachView
 	var detached, sessionEnded atomic.Bool
+	var remoteStreamTerminated bool
 	defer func() {
 		if view != nil {
 			if err := view.close(); err != nil {
 				retErr = errors.Join(retErr, err)
 			}
 		}
-		if sessionEnded.Load() && !detached.Load() {
+		if (sessionEnded.Load() || remoteStreamTerminated) && !detached.Load() {
 			if view != nil {
 				if row := view.reservedRow(); row > 0 {
 					if err := writeOut(fmt.Sprintf("\x1b7\x1b[r\x1b[%d;1H\x1b[2K\x1b8", row)); err != nil {
@@ -445,6 +446,7 @@ func runTerminalAttach(
 
 	collectReady(frameErr, &frameDone)
 	collectReady(inputErr, &inputDone)
+	remoteStreamTerminated = frameDone
 
 	stopAttach()
 	closeStream()

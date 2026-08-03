@@ -30,6 +30,9 @@ intent_links:
       - attach.go:transportConn
       - bridge.go:bridgeAction
       - client_attach.go:runTerminalAttach
+      - client_attach_test.go:TestClientAttachReportsMalformedDaemonFrame
+      - client_attach_test.go:TestClientAttachDisconnectClearsDetachInstructionsWithoutReset
+      - e2e/attach_errors_test.go:TestAttachDisconnectClearsDetachInstructionsWithoutReset
       - e2e/bridge_test.go:TestBridgeForwardsAttachProtocolVerbatim
       - e2e/bridge_test.go:TestAttachViaTransportBridgesRemoteSession
       - e2e/bridge_test.go:TestBridgeReportsEndedAndMissingSessions
