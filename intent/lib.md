@@ -66,3 +66,16 @@ The bgx library allows any golang app to:
 These capabilities together enable a library-based bgx client to interact with
 library-managed remote bgx sessions (i.e. via a remote go binary that isn't
 bgx), and all other combinations of library vs cli and local vs remote.
+
+## API
+
+The bgx API provides an interface that mirrors the cli. For example `bgx.Run` is
+the library equivalent of the `bgx run` cli subcommand. Option names should be
+mirrored as well.
+
+## Constrants
+
+- The library is at least as powerful as the cli: the cli can do nothing that
+  the library does not expose. This is not necessarily true vice versa.
+- The cli itself is NOT exposed via the library, e.g. we do not want the library
+  to expose a way to run the top-level cli command action.
