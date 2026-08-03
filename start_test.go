@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -237,5 +238,66 @@ func TestStartRacingSameIDAllowsExactlyOne(t *testing.T) {
 	}
 	if oks != 1 || dups != 1 {
 		t.Fatalf("racing Starts: %d succeeded, %d duplicate errors (errors: %v), want exactly 1 and 1", oks, dups, errs)
+	}
+}
+func TestReleaseNamespaceLockAggregatesUnlockAndCloseErrors(t *testing.T) {
+	lockFile, err := os.CreateTemp(t.TempDir(), "namespace-lock-*")
+	if err != nil {
+		t.Fatalf("create lock file: %v", err)
+	}
+	if err := lockFile.Close(); err != nil {
+		t.Fatalf("close lock file: %v", err)
+	}
+
+	err = releaseNamespaceLock(lockFile)
+	if err == nil {
+		t.Fatal("releaseNamespaceLock returned nil for a closed lock file")
+	}
+	if !strings.Contains(err.Error(), "unlock namespace") {
+		t.Fatalf("releaseNamespaceLock error = %v, want unlock context", err)
+	}
+	if !strings.Contains(err.Error(), "close namespace lock") {
+		t.Fatalf("releaseNamespaceLock error = %v, want close context", err)
+	}
+}
+
+func TestJoinDaemonFileCleanupErrorPreservesBothErrors(t *testing.T) {
+	startErr := errors.New("startup failed")
+	removeErr := errors.New("remove daemon stderr")
+	err := joinDaemonFileCleanupError(startErr, "stderr-path", func(string) error {
+		return removeErr
+	})
+
+	if !errors.Is(err, startErr) {
+		t.Fatalf("cleanup error = %v, want startup error", err)
+	}
+	if !errors.Is(err, removeErr) {
+		t.Fatalf("cleanup error = %v, want remove error", err)
+	}
+}
+func TestTeardownStartedDaemonReapsProcessAndRemovesStderr(t *testing.T) {
+	stderr, err := os.CreateTemp(t.TempDir(), "daemon-stderr-*")
+	if err != nil {
+		t.Fatalf("create stderr file: %v", err)
+	}
+	stderrPath := stderr.Name()
+	if err := stderr.Close(); err != nil {
+		t.Fatalf("close stderr file: %v", err)
+	}
+
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start subprocess: %v", err)
+	}
+	cleanupErr := errors.New("close daemon files")
+	err = teardownStartedDaemon(cmd, stderrPath, cleanupErr)
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("teardownStartedDaemon error = %v, want cleanup error", err)
+	}
+	if cmd.ProcessState == nil {
+		t.Fatal("teardownStartedDaemon did not reap subprocess")
+	}
+	if _, statErr := os.Stat(stderrPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("stderr file still exists or stat failed unexpectedly: %v", statErr)
 	}
 }

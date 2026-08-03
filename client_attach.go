@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 
@@ -15,6 +17,17 @@ import (
 
 type attachConfig struct {
 	showDetachInstructions bool
+}
+
+type attachStreamCloser struct {
+	once sync.Once
+	err  error
+}
+
+func (c *attachStreamCloser) close(conn io.Closer) {
+	c.once.Do(func() {
+		c.err = conn.Close()
+	})
 }
 
 // AttachOption configures an interactive attachment.
@@ -30,7 +43,7 @@ func WithDetachInstructions() AttachOption {
 
 // Attach connects terminal to the session until it ends, the user detaches, the
 // terminal input closes, or ctx is canceled.
-func (c *Client) Attach(ctx context.Context, terminal Terminal, options ...AttachOption) error {
+func (c *Client) Attach(ctx context.Context, terminal Terminal, options ...AttachOption) (retErr error) {
 	const operation = "attach"
 	if terminal == nil {
 		return errors.New("attach: terminal is nil")
@@ -56,12 +69,19 @@ func (c *Client) Attach(ctx context.Context, terminal Terminal, options ...Attac
 			Err:       errors.New("dialer returned a nil stream"),
 		}
 	}
-	defer conn.Close()
 
+	var streamCloser attachStreamCloser
 	stopCancellation := context.AfterFunc(ctx, func() {
-		_ = conn.Close()
+		streamCloser.close(conn)
 	})
-	defer stopCancellation()
+	defer func() {
+		stopCancellation()
+		streamCloser.close(conn)
+		closeErr := withoutExpectedAttachShutdownErrors(streamCloser.err, false)
+		if closeErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("attach: close stream: %w", closeErr))
+		}
+	}()
 
 	if err := json.NewEncoder(conn).Encode(daemon.Request{Op: operation}); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -98,145 +118,350 @@ func (c *Client) Attach(ctx context.Context, terminal Terminal, options ...Attac
 		}
 	}
 
-	return runTerminalAttach(ctx, conn, br, terminal, cfg)
+	err = runTerminalAttach(ctx, conn, br, func() {
+		streamCloser.close(conn)
+	}, terminal, cfg)
+	return withoutAttachDetached(err)
 }
 
-func runTerminalAttach(ctx context.Context, conn io.Writer, frames io.Reader, terminal Terminal, cfg attachConfig) error {
+var errAttachDetached = errors.New("attach detached")
+
+func withoutAttachDetached(err error) error {
+	if err == nil || err == errAttachDetached {
+		return nil
+	}
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		return err
+	}
+	children := joined.Unwrap()
+	remaining := make([]error, 0, len(children))
+	for _, child := range children {
+		if child = withoutAttachDetached(child); child != nil {
+			remaining = append(remaining, child)
+		}
+	}
+	return errors.Join(remaining...)
+}
+
+type prunedAttachError struct {
+	message string
+	err     error
+}
+
+func (e *prunedAttachError) Error() string {
+	return e.message
+}
+
+func (e *prunedAttachError) Unwrap() error {
+	return e.err
+}
+
+func withoutExpectedAttachShutdownErrors(err error, includeEOF bool) error {
+	if err == nil {
+		return nil
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		remaining := make([]error, 0, len(children))
+		for _, child := range children {
+			if child = withoutExpectedAttachShutdownErrors(child, includeEOF); child != nil {
+				remaining = append(remaining, child)
+			}
+		}
+		return errors.Join(remaining...)
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		child := withoutExpectedAttachShutdownErrors(wrapped.Unwrap(), includeEOF)
+		if child == nil {
+			return nil
+		}
+		return &prunedAttachError{message: err.Error(), err: child}
+	}
+	if errors.Is(err, context.Canceled) ||
+		errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, os.ErrClosed) ||
+		errors.Is(err, io.ErrClosedPipe) ||
+		includeEOF && errors.Is(err, io.EOF) {
+		return nil
+	}
+	return err
+}
+
+func runTerminalAttach(
+	ctx context.Context,
+	conn io.Writer,
+	frames io.Reader,
+	closeStream func(),
+	terminal Terminal,
+	cfg attachConfig,
+) (retErr error) {
 	if err := terminal.EnterRaw(); err != nil {
 		return fmt.Errorf("attach: enter raw mode: %w", err)
 	}
-	defer terminal.Restore()
+	defer func() {
+		if err := terminal.Restore(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("attach: restore terminal: %w", err))
+		}
+	}()
 
 	var outMu sync.Mutex
-	writeOut := func(s string) {
+	writeOut := func(s string) error {
 		outMu.Lock()
 		defer outMu.Unlock()
-		_, _ = io.WriteString(terminal, s)
+		n, err := io.WriteString(terminal, s)
+		if err != nil {
+			return fmt.Errorf("attach: write terminal: %w", err)
+		}
+		if n != len(s) {
+			return fmt.Errorf("attach: write terminal: %w", io.ErrShortWrite)
+		}
+		return nil
 	}
-	writeBytes := func(p []byte) {
+	writeBytes := func(p []byte) error {
 		outMu.Lock()
 		defer outMu.Unlock()
-		_, _ = terminal.Write(p)
+		n, err := terminal.Write(p)
+		if err != nil {
+			return fmt.Errorf("attach: write terminal: %w", err)
+		}
+		if n != len(p) {
+			return fmt.Errorf("attach: write terminal: %w", io.ErrShortWrite)
+		}
+		return nil
 	}
 
-	writeOut("\x1b[2J\x1b[H")
+	if err := writeOut("\x1b[2J\x1b[H"); err != nil {
+		return err
+	}
 
 	var view *attachView
-	if cfg.showDetachInstructions {
-		if cols, rows, err := terminal.Size(); err == nil && cols > 0 && rows > 0 {
-			view = newAttachView(writeOut, cols, rows)
-		}
-	}
-
 	var detached, sessionEnded atomic.Bool
 	defer func() {
 		if view != nil {
-			view.close()
+			if err := view.close(); err != nil {
+				retErr = errors.Join(retErr, err)
+			}
 		}
 		if sessionEnded.Load() && !detached.Load() {
 			if view != nil {
 				if row := view.reservedRow(); row > 0 {
-					writeOut(fmt.Sprintf("\x1b7\x1b[r\x1b[%d;1H\x1b[2K\x1b8", row))
+					if err := writeOut(fmt.Sprintf("\x1b7\x1b[r\x1b[%d;1H\x1b[2K\x1b8", row)); err != nil {
+						retErr = errors.Join(retErr, err)
+					}
 				}
 			}
-			writeOut("\x1b[?25h\x1b[0m")
+			if err := writeOut("\x1b[?25h\x1b[0m"); err != nil {
+				retErr = errors.Join(retErr, err)
+			}
 			return
 		}
-		writeOut("\x1bc")
+		if err := writeOut("\x1bc"); err != nil {
+			retErr = errors.Join(retErr, err)
+		}
 	}()
+
+	if cfg.showDetachInstructions {
+		cols, rows, err := terminal.Size()
+		if err != nil && !errors.Is(err, ErrTerminalSizeUnavailable) {
+			return fmt.Errorf("attach: read terminal size: %w", err)
+		}
+		if err == nil && cols > 0 && rows > 0 {
+			view, err = newAttachView(writeOut, cols, rows)
+			if err != nil {
+				return err
+			}
+		}
+	}
 
 	var writeMu sync.Mutex
 	send := func(tag daemon.FrameTag, payload []byte) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		return daemon.WriteFrame(conn, tag, payload)
+		if err := daemon.WriteFrame(conn, tag, payload); err != nil {
+			return fmt.Errorf("attach: send frame: %w", err)
+		}
+		return nil
 	}
-	sendSize := func() {
+	sendSize := func() error {
 		cols, rows, err := terminal.Size()
-		if err != nil || cols == 0 || rows == 0 {
-			return
+		if errors.Is(err, ErrTerminalSizeUnavailable) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("attach: read terminal size: %w", err)
+		}
+		if cols == 0 || rows == 0 {
+			return nil
 		}
 		if view != nil {
-			rows = view.setSize(cols, rows)
+			rows, err = view.setSize(cols, rows)
+			if err != nil {
+				return err
+			}
 			if rows == 0 {
-				return
+				return nil
 			}
 		}
-		_ = send(daemon.FrameResize, daemon.EncodeResize(rows, cols))
+		return send(daemon.FrameResize, daemon.EncodeResize(rows, cols))
 	}
-	sendSize()
+	if err := sendSize(); err != nil {
+		return err
+	}
 
 	attachCtx, stopAttach := context.WithCancel(ctx)
 	defer stopAttach()
 
+	resizeErr := make(chan error, 1)
+	resizeStopped := make(chan struct{})
 	resizes := terminal.ResizeEvents(attachCtx)
 	go func() {
+		defer close(resizeStopped)
 		for range resizes {
-			sendSize()
+			if err := sendSize(); err != nil {
+				resizeErr <- err
+				return
+			}
 		}
 	}()
 
-	frameDone := make(chan struct{})
+	frameErr := make(chan error, 1)
 	go func() {
-		defer close(frameDone)
 		for {
 			tag, payload, err := daemon.ReadFrame(frames)
 			if err != nil {
+				frameErr <- fmt.Errorf("attach: read frame: %w", err)
 				return
 			}
 			switch tag {
 			case daemon.FrameOutput:
 				if view != nil {
-					view.feed(payload)
+					err = view.feed(payload)
 				} else {
-					writeBytes(payload)
+					err = writeBytes(payload)
 				}
 			case daemon.FrameResync:
 				if view != nil {
-					view.resync(payload)
+					err = view.resync(payload)
 				} else {
-					writeBytes(payload)
+					err = writeBytes(payload)
 				}
 			case daemon.FrameResize:
-				sendSize()
+				err = sendSize()
 			case daemon.FrameEnded:
 				sessionEnded.Store(true)
+				frameErr <- nil
+				return
+			}
+			if err != nil {
+				frameErr <- err
 				return
 			}
 		}
 	}()
 
-	inputDone := make(chan struct{})
+	inputErr := make(chan error, 1)
 	go func() {
-		defer close(inputDone)
 		buf := make([]byte, 64<<10)
 		var scanner detachScanner
 		for {
-			n, err := terminal.Read(buf)
+			n, err := terminal.ReadContext(attachCtx, buf)
 			if n > 0 {
 				forward, detach := scanner.feed(buf[:n])
 				if len(forward) > 0 {
-					if send(daemon.FrameInput, forward) != nil {
+					if sendErr := send(daemon.FrameInput, forward); sendErr != nil {
+						inputErr <- sendErr
 						return
 					}
 				}
 				if detach {
+					if sendErr := send(daemon.FrameDetach, nil); sendErr != nil {
+						inputErr <- sendErr
+						return
+					}
 					detached.Store(true)
-					_ = send(daemon.FrameDetach, nil)
+					if err != nil && !errors.Is(err, io.EOF) {
+						inputErr <- errors.Join(
+							errAttachDetached,
+							fmt.Errorf("attach: read terminal: %w", err),
+						)
+					} else {
+						inputErr <- errAttachDetached
+					}
 					return
 				}
 			}
 			if err != nil {
+				if errors.Is(err, io.EOF) {
+					inputErr <- nil
+				} else {
+					inputErr <- fmt.Errorf("attach: read terminal: %w", err)
+				}
 				return
 			}
 		}
 	}()
 
+	var viewErr <-chan error
+	if view != nil {
+		viewErr = view.errs
+	}
+
+	var result error
+	var resizeErrSelected, frameDone, inputDone bool
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
-	case <-frameDone:
-	case <-inputDone:
+		result = ctx.Err()
+	case err := <-resizeErr:
+		result = err
+		resizeErrSelected = true
+	case err := <-frameErr:
+		result = err
+		frameDone = true
+	case err := <-inputErr:
+		result = err
+		inputDone = true
+	case err := <-viewErr:
+		result = err
 	}
-	return nil
+
+	joinWorkerError := func(err error, shuttingDown bool) {
+		err = withoutExpectedAttachShutdownErrors(err, shuttingDown)
+		if err != nil {
+			result = errors.Join(result, err)
+		}
+	}
+	collectReady := func(worker <-chan error, done *bool) {
+		if *done {
+			return
+		}
+		select {
+		case err := <-worker:
+			joinWorkerError(err, false)
+			*done = true
+		default:
+		}
+	}
+
+	collectReady(frameErr, &frameDone)
+	collectReady(inputErr, &inputDone)
+
+	stopAttach()
+	closeStream()
+	<-resizeStopped
+	if !resizeErrSelected {
+		select {
+		case err := <-resizeErr:
+			joinWorkerError(err, true)
+		default:
+		}
+	}
+
+	if !frameDone {
+		joinWorkerError(<-frameErr, true)
+	}
+	if !inputDone {
+		joinWorkerError(<-inputErr, true)
+	}
+	return result
 }

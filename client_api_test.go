@@ -40,7 +40,11 @@ func (d *scriptedDialer) Dial(ctx context.Context) (io.ReadWriteCloser, error) {
 
 	go func() {
 		defer close(closed)
-		defer server.Close()
+		defer func() {
+			if err := server.Close(); err != nil {
+				d.t.Errorf("close server stream: %v", err)
+			}
+		}()
 
 		line, err := bufio.NewReader(server).ReadBytes('\n')
 		if err != nil {
@@ -60,7 +64,9 @@ func (d *scriptedDialer) Dial(ctx context.Context) (io.ReadWriteCloser, error) {
 			d.t.Errorf("write response: %v", err)
 			return
 		}
-		_, _ = io.Copy(io.Discard, server)
+		if _, err := io.Copy(io.Discard, server); err != nil && !errors.Is(err, net.ErrClosed) {
+			d.t.Errorf("drain server stream: %v", err)
+		}
 	}()
 
 	return client, nil
@@ -229,7 +235,11 @@ func TestClientRejectsMalformedAndIncompleteResponses(t *testing.T) {
 }
 func TestClientCancellationClosesOperationStream(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
-	defer serverConn.Close()
+	t.Cleanup(func() {
+		if err := serverConn.Close(); err != nil {
+			t.Errorf("close server connection: %v", err)
+		}
+	})
 
 	dialed := make(chan struct{})
 	peerClosed := make(chan struct{})
@@ -249,8 +259,10 @@ func TestClientCancellationClosesOperationStream(t *testing.T) {
 	if _, err := bufio.NewReader(serverConn).ReadBytes('\n'); err != nil {
 		t.Fatalf("read request: %v", err)
 	}
+	peerErr := make(chan error, 1)
 	go func() {
-		_, _ = io.Copy(io.Discard, serverConn)
+		_, err := io.Copy(io.Discard, serverConn)
+		peerErr <- err
 		close(peerClosed)
 	}()
 
@@ -265,6 +277,9 @@ func TestClientCancellationClosesOperationStream(t *testing.T) {
 	}
 	select {
 	case <-peerClosed:
+		if err := <-peerErr; err != nil && !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("drain operation stream: %v", err)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("context cancellation did not close operation stream")
 	}

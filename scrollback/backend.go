@@ -68,7 +68,13 @@ type memoryBackend struct{}
 
 func (memoryBackend) put(data []byte) (chunkHandle, error) { return data, nil }
 
-func (memoryBackend) get(h chunkHandle) ([]byte, error) { return h.([]byte), nil }
+func (memoryBackend) get(h chunkHandle) ([]byte, error) {
+	data, ok := h.([]byte)
+	if !ok {
+		return nil, fmt.Errorf("memory scrollback handle has type %T", h)
+	}
+	return data, nil
+}
 
 func (memoryBackend) drop(chunkHandle) error { return nil }
 
@@ -106,11 +112,19 @@ func (b *diskBackend) put(data []byte) (chunkHandle, error) {
 }
 
 func (b *diskBackend) get(h chunkHandle) ([]byte, error) {
-	return os.ReadFile(h.(string))
+	path, ok := h.(string)
+	if !ok {
+		return nil, fmt.Errorf("disk scrollback handle has type %T", h)
+	}
+	return os.ReadFile(path)
 }
 
 func (b *diskBackend) drop(h chunkHandle) error {
-	return os.Remove(h.(string))
+	path, ok := h.(string)
+	if !ok {
+		return fmt.Errorf("disk scrollback handle has type %T", h)
+	}
+	return os.Remove(path)
 }
 
 func (b *diskBackend) close() error {

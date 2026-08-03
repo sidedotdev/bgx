@@ -51,16 +51,17 @@ type infoResult struct {
 
 // dialRequest sends a single JSON-line request to a session's socket and
 // decodes the reply.
-func dialRequest(id string, req daemon.Request) (daemon.Response, error) {
+func dialRequest(id string, req daemon.Request) (resp daemon.Response, retErr error) {
 	conn, err := net.Dial("unix", socketPath(id))
 	if err != nil {
 		return daemon.Response{}, err
 	}
-	defer conn.Close()
+	defer func() {
+		retErr = errors.Join(retErr, conn.Close())
+	}()
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		return daemon.Response{}, err
 	}
-	var resp daemon.Response
 	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
 		return daemon.Response{}, err
 	}
@@ -179,13 +180,12 @@ func spawnDaemon(cfg daemon.Config) (*exec.Cmd, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	defer devnull.Close()
 
 	stderr, err := os.CreateTemp("", "bgx-daemon-stderr-*")
 	if err != nil {
-		return nil, "", err
+		return nil, "", errors.Join(err, devnull.Close())
 	}
-	defer stderr.Close()
+	stderrPath := stderr.Name()
 
 	dc := exec.Command(exe)
 	dc.Env = append(os.Environ(), daemonConfigEnv+"="+string(payload))
@@ -194,10 +194,17 @@ func spawnDaemon(cfg daemon.Config) (*exec.Cmd, string, error) {
 	dc.Stderr = stderr
 	dc.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := dc.Start(); err != nil {
-		os.Remove(stderr.Name())
-		return nil, "", err
+		return nil, "", errors.Join(
+			err,
+			devnull.Close(),
+			stderr.Close(),
+			os.Remove(stderrPath),
+		)
 	}
-	return dc, stderr.Name(), nil
+	if err := errors.Join(devnull.Close(), stderr.Close()); err != nil {
+		return nil, "", teardownStartedDaemon(dc, stderrPath, err)
+	}
+	return dc, stderrPath, nil
 }
 
 // waitForSession blocks until a freshly spawned session answers on its socket
@@ -330,7 +337,9 @@ func waitAction(ctx context.Context, cmd *cli.Command) error {
 // emitExit prints the session's exit code as JSON and mirrors it as the bgx
 // process exit status.
 func emitExit(id string, code int) error {
-	_ = printJSON(os.Stdout, map[string]any{"id": id, "exit_code": code})
+	if err := printJSON(os.Stdout, map[string]any{"id": id, "exit_code": code}); err != nil {
+		return err
+	}
 	os.Exit(code)
 	return nil
 }
@@ -405,7 +414,7 @@ func listAction(_ context.Context, cmd *cli.Command) error {
 // concurrent run invocations cannot race past the configured cap. The returned
 // release function must be called once the new session is observable. The lock
 // is also released automatically if the process exits while holding it.
-func lockNamespace(ns string) (func(), error) {
+func lockNamespace(ns string) (func() error, error) {
 	dir := socketDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
@@ -416,13 +425,25 @@ func lockNamespace(ns string) (func(), error) {
 		return nil, err
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		f.Close()
-		return nil, err
+		return nil, errors.Join(err, f.Close())
 	}
-	return func() {
-		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		f.Close()
+	return func() error {
+		return releaseNamespaceLock(f)
 	}, nil
+}
+
+func releaseNamespaceLock(f *os.File) error {
+	return errors.Join(
+		wrapCleanupError("unlock namespace", syscall.Flock(int(f.Fd()), syscall.LOCK_UN)),
+		wrapCleanupError("close namespace lock", f.Close()),
+	)
+}
+
+func wrapCleanupError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", operation, err)
 }
 
 // runningInNamespace returns the live sessions whose ids share the given
@@ -445,15 +466,13 @@ func failConcurrencyLimit(ns string, limit int, sessions []*daemon.Info) error {
 	if ns == "" {
 		label = "the global namespace"
 	}
-	_ = printJSON(os.Stderr, map[string]any{
-		"error": fmt.Sprintf("run: %s already has %d active session(s); concurrency limit is %d",
-			label, len(sessions), limit),
-		"code":     codeConcurrencyLimit,
-		"source":   errorSource,
-		"sessions": sessions,
-	})
-	os.Exit(1)
-	return nil
+	err := fmt.Errorf("run: %s already has %d active session(s); concurrency limit is %d",
+		label, len(sessions), limit)
+	return &codedError{
+		code:    codeConcurrencyLimit,
+		err:     err,
+		payload: map[string]any{"sessions": sessions},
+	}
 }
 
 // listRunning queries every live session socket, cleaning up sockets that no
@@ -478,7 +497,9 @@ func listRunning() []*daemon.Info {
 			out = append(out, info)
 			continue
 		}
-		os.Remove(filepath.Join(dir, name))
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			continue
+		}
 	}
 	return out
 }
@@ -527,4 +548,19 @@ func matchesMetadata(info *daemon.Info, filters map[string]string) bool {
 		}
 	}
 	return true
+}
+func teardownStartedDaemon(cmd *exec.Cmd, stderrPath string, cause error) error {
+	killErr := cmd.Process.Kill()
+	if errors.Is(killErr, os.ErrProcessDone) {
+		killErr = nil
+	}
+	waitErr := cmd.Wait()
+	if errors.Is(waitErr, os.ErrProcessDone) {
+		waitErr = nil
+	}
+	removeErr := os.Remove(stderrPath)
+	if errors.Is(removeErr, os.ErrNotExist) {
+		removeErr = nil
+	}
+	return errors.Join(cause, killErr, waitErr, removeErr)
 }

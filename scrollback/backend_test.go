@@ -17,7 +17,11 @@ func TestDiskBackendMatchesMemorySnapshot(t *testing.T) {
 	data := pattern(total)
 
 	mem := newStore(head, tail, chunk, 1<<20)
-	defer mem.Close()
+	t.Cleanup(func() {
+		if err := mem.Close(); err != nil {
+			t.Errorf("close memory store: %v", err)
+		}
+	})
 	if _, err := mem.Write(data); err != nil {
 		t.Fatalf("memory write: %v", err)
 	}
@@ -28,7 +32,11 @@ func TestDiskBackendMatchesMemorySnapshot(t *testing.T) {
 		t.Fatalf("new disk backend: %v", err)
 	}
 	disk := newStoreBackend(head, tail, chunk, 1<<20, db)
-	defer disk.Close()
+	t.Cleanup(func() {
+		if err := disk.Close(); err != nil {
+			t.Errorf("close disk store: %v", err)
+		}
+	})
 	if _, err := disk.Write(data); err != nil {
 		t.Fatalf("disk write: %v", err)
 	}
@@ -54,7 +62,11 @@ func TestDiskBackendPersistsAndEvictsChunks(t *testing.T) {
 		t.Fatalf("new disk backend: %v", err)
 	}
 	s := newStoreBackend(head, tail, chunk, 1<<20, db)
-	defer s.Close()
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("close disk store: %v", err)
+		}
+	})
 
 	if _, err := s.Write(pattern(total)); err != nil {
 		t.Fatalf("write: %v", err)
@@ -88,7 +100,11 @@ func TestDiskBackendCustomPathHonored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new disk backend: %v", err)
 	}
-	defer db.close()
+	t.Cleanup(func() {
+		if err := db.close(); err != nil {
+			t.Errorf("close disk backend: %v", err)
+		}
+	})
 
 	if filepath.Dir(db.dir) != base {
 		t.Fatalf("chunk dir %q not under custom base %q", db.dir, base)
@@ -98,7 +114,11 @@ func TestDiskBackendCustomPathHonored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	if dir := filepath.Dir(h.(string)); dir != db.dir {
+	path, ok := h.(string)
+	if !ok {
+		t.Fatalf("chunk handle has type %T, want string", h)
+	}
+	if dir := filepath.Dir(path); dir != db.dir {
 		t.Fatalf("chunk file %q not under %q", h, db.dir)
 	}
 	got, err := db.get(h)
@@ -121,7 +141,9 @@ func TestDiskBackendCleanupOnClose(t *testing.T) {
 	if _, err := s.Write(pattern(5000)); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	_ = s.Snapshot()
+	if snapshot := s.Snapshot(); len(snapshot) == 0 {
+		t.Fatal("snapshot is empty after write")
+	}
 
 	if _, err := os.Stat(dir); err != nil {
 		t.Fatalf("chunk dir should exist before close: %v", err)
@@ -139,7 +161,11 @@ func TestNewDiskStorageRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
-	defer s.Close()
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("close disk store: %v", err)
+		}
+	})
 
 	data := []byte("config-driven disk store")
 	if _, err := s.Write(data); err != nil {

@@ -1,6 +1,7 @@
 package bgx
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -28,10 +29,11 @@ const detachHintStyle = "\x1b[48;5;236;38;5;250m"
 // alternate screen, or escapes split across frames) cannot reach — and so
 // cannot corrupt — the reserved line.
 type attachView struct {
-	write   func(string)
+	write   func(string) error
 	wake    chan struct{}
 	done    chan struct{}
 	stopped chan struct{}
+	errs    chan error
 
 	mu       sync.Mutex
 	term     *vt.Terminal
@@ -43,24 +45,27 @@ type attachView struct {
 
 // newAttachView starts a view for a physical terminal of the given size. The
 // returned view must be closed to stop painting.
-func newAttachView(write func(string), cols, physicalRows uint16) *attachView {
+func newAttachView(write func(string) error, cols, physicalRows uint16) (*attachView, error) {
 	v := &attachView{
 		write:   write,
 		wake:    make(chan struct{}, 1),
 		done:    make(chan struct{}),
 		stopped: make(chan struct{}),
+		errs:    make(chan error, 1),
 	}
-	v.setSize(cols, physicalRows)
+	if _, err := v.setSize(cols, physicalRows); err != nil {
+		return nil, err
+	}
 	go v.paintLoop()
-	return v
+	return v, nil
 }
 
 // setSize adapts the view to the physical terminal size and reports the row
 // count to advertise to the session. The bottom line is reserved for the hint
 // whenever the terminal has room for both it and the session.
-func (v *attachView) setSize(cols, physicalRows uint16) uint16 {
+func (v *attachView) setSize(cols, physicalRows uint16) (uint16, error) {
 	if cols == 0 || physicalRows == 0 {
-		return 0
+		return 0, nil
 	}
 	rows := physicalRows
 	reserved := physicalRows > 1
@@ -71,19 +76,23 @@ func (v *attachView) setSize(cols, physicalRows uint16) uint16 {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.closed {
-		return rows
+		return rows, nil
 	}
 	changed := v.term == nil || v.cols != cols || v.rows != rows || v.reserved != reserved
 	v.cols, v.rows, v.reserved = cols, rows, reserved
 	if v.term == nil {
-		v.term, _ = vt.New(cols, rows)
-	} else {
-		_ = v.term.Resize(cols, rows)
+		term, err := vt.New(cols, rows)
+		if err != nil {
+			return 0, fmt.Errorf("create attach view: %w", err)
+		}
+		v.term = term
+	} else if err := v.term.Resize(cols, rows); err != nil {
+		return 0, fmt.Errorf("resize attach view: %w", err)
 	}
 	if changed {
 		v.markDirty()
 	}
-	return rows
+	return rows, nil
 }
 
 // reservedRow reports the 1-based physical row holding the detach hint, or 0
@@ -98,53 +107,68 @@ func (v *attachView) reservedRow() int {
 }
 
 // feed advances the view's terminal state with streamed session output.
-func (v *attachView) feed(payload []byte) {
+func (v *attachView) feed(payload []byte) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.term == nil {
-		return
+		return nil
 	}
-	_, _ = v.term.Write(payload)
+	if _, err := v.term.Write(payload); err != nil {
+		return fmt.Errorf("update attach view: %w", err)
+	}
 	v.markDirty()
+	return nil
 }
 
 // resync replaces the view's state from a full-screen snapshot. The frames it
 // supersedes were dropped, so the local terminal is recreated rather than
 // written to, discarding any modes those frames may have set.
-func (v *attachView) resync(payload []byte) {
+func (v *attachView) resync(payload []byte) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.term == nil {
-		return
+		return nil
 	}
 	v.term.Close()
-	v.term, _ = vt.New(v.cols, v.rows)
-	if v.term == nil {
-		return
+	term, err := vt.New(v.cols, v.rows)
+	if err != nil {
+		v.term = nil
+		return fmt.Errorf("recreate attach view: %w", err)
 	}
-	_, _ = v.term.Write(payload)
+	v.term = term
+	if _, err := v.term.Write(payload); err != nil {
+		return fmt.Errorf("resync attach view: %w", err)
+	}
 	v.markDirty()
+	return nil
 }
 
 // close stops painting and releases the local terminal, flushing a repaint that
 // was still pending. It is idempotent and waits for any in-flight paint, so
 // callers can write their own sequences afterwards without interleaving.
-func (v *attachView) close() {
+func (v *attachView) close() error {
 	v.mu.Lock()
 	if v.closed {
 		v.mu.Unlock()
-		return
+		return nil
 	}
 	v.closed = true
 	v.mu.Unlock()
 
 	close(v.done)
 	<-v.stopped
+
+	var err error
+	select {
+	case err = <-v.errs:
+	default:
+	}
+
 	// A repaint queued when the painter stopped carries the session's final
 	// output, which would otherwise never be shown.
 	select {
 	case <-v.wake:
-		v.paint()
+		err = errors.Join(err, v.paint())
 	default:
 	}
 
@@ -154,6 +178,7 @@ func (v *attachView) close() {
 		v.term.Close()
 		v.term = nil
 	}
+	return err
 }
 
 // markDirty requests a repaint. The caller must hold v.mu.
@@ -172,7 +197,10 @@ func (v *attachView) paintLoop() {
 			return
 		case <-v.wake:
 		}
-		v.paint()
+		if err := v.paint(); err != nil {
+			v.errs <- err
+			return
+		}
 		// Rate-limit repaints; requests arriving during the pause coalesce into
 		// the next one.
 		select {
@@ -185,17 +213,17 @@ func (v *attachView) paintLoop() {
 
 // paint redraws the whole physical screen from the local terminal state, then
 // draws the detach hint on the reserved line.
-func (v *attachView) paint() {
+func (v *attachView) paint() error {
 	v.mu.Lock()
 	if v.term == nil {
 		v.mu.Unlock()
-		return
+		return nil
 	}
 	rows, reserved := v.rows, v.reserved
 	screen, err := v.term.DumpScreen()
 	v.mu.Unlock()
 	if err != nil {
-		return
+		return fmt.Errorf("render attach view: %w", err)
 	}
 
 	var b strings.Builder
@@ -219,5 +247,8 @@ func (v *attachView) paint() {
 		fmt.Fprintf(&b, "\x1b7\x1b[%d;1H%s\x1b[2K%s\x1b[0m\x1b8", rows+1, detachHintStyle, detachHint)
 	}
 	b.WriteString("\x1b[?2026l")
-	v.write(b.String())
+	if err := v.write(b.String()); err != nil {
+		return fmt.Errorf("paint attach view: %w", err)
+	}
+	return nil
 }

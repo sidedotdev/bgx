@@ -2,12 +2,14 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -105,24 +107,29 @@ func pruneRetention(retentionDir, id string, keep int) error {
 	sort.Slice(records, func(i, j int) bool {
 		return records[i].ended.After(records[j].ended)
 	})
+	var removeErr error
 	for _, r := range records[keep:] {
-		os.Remove(filepath.Join(dir, r.base+".json"))
-		os.Remove(filepath.Join(dir, r.base+".history"))
+		removeErr = errors.Join(
+			removeErr,
+			os.Remove(filepath.Join(dir, r.base+".json")),
+			os.Remove(filepath.Join(dir, r.base+".history")),
+		)
 	}
-	return nil
+	return removeErr
 }
 
 // activeNamespaceSessions counts live session sockets sharing id's namespace,
 // excluding id itself. Currently-running sessions count toward the per-namespace
 // retention budget alongside ended records, so each occupies a retained slot.
 // Stale sockets left by crashed daemons have no listener and are not counted.
-func activeNamespaceSessions(socketDir, id string) int {
+func activeNamespaceSessions(socketDir, id string) (int, error) {
 	entries, err := os.ReadDir(socketDir)
 	if err != nil {
-		return 0
+		return 0, err
 	}
 	ns := Namespace(id)
 	count := 0
+	var probeErr error
 	for _, e := range entries {
 		name := e.Name()
 		if !strings.HasSuffix(name, ".sock") {
@@ -132,22 +139,33 @@ func activeNamespaceSessions(socketDir, id string) int {
 		if err != nil || other == id || Namespace(other) != ns {
 			continue
 		}
-		if socketAlive(filepath.Join(socketDir, name)) {
+		alive, err := socketAlive(filepath.Join(socketDir, name))
+		probeErr = errors.Join(probeErr, err)
+		if alive {
 			count++
 		}
 	}
-	return count
+	return count, probeErr
 }
 
 // socketAlive reports whether a unix socket has a live listener, distinguishing
 // running sessions from stale socket files left behind by crashed daemons.
-func socketAlive(path string) bool {
-	conn, err := net.DialTimeout("unix", path, 200*time.Millisecond)
+func socketAlive(path string) (bool, error) {
+	return socketAliveWithDial(path, net.DialTimeout)
+}
+
+func socketAliveWithDial(
+	path string,
+	dial func(string, string, time.Duration) (net.Conn, error),
+) (bool, error) {
+	conn, err := dial("unix", path, 200*time.Millisecond)
 	if err != nil {
-		return false
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) {
+			return false, nil
+		}
+		return false, err
 	}
-	conn.Close()
-	return true
+	return true, conn.Close()
 }
 
 // recordEndedAt reads a persisted record's end time, falling back to the file's

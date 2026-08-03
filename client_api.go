@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/sidedotdev/bgx/daemon"
 )
@@ -107,7 +108,7 @@ func (c *Client) exitOperation(ctx context.Context, operation string) (*ExitResu
 	return &ExitResult{Info: resp.Info, ExitCode: *resp.ExitCode}, nil
 }
 
-func (c *Client) request(ctx context.Context, req daemon.Request) (daemon.Response, error) {
+func (c *Client) request(ctx context.Context, req daemon.Request) (resp daemon.Response, retErr error) {
 	if c == nil || c.dial == nil {
 		return daemon.Response{}, errors.New("bgx: client has no dialer")
 	}
@@ -121,12 +122,26 @@ func (c *Client) request(ctx context.Context, req daemon.Request) (daemon.Respon
 			Err:       errors.New("dialer returned a nil stream"),
 		}
 	}
-	defer conn.Close()
 
-	stopCancellation := context.AfterFunc(ctx, func() {
-		_ = conn.Close()
-	})
-	defer stopCancellation()
+	var closeOnce sync.Once
+	var closeMu sync.Mutex
+	var closeErr error
+	closeConn := func() {
+		closeOnce.Do(func() {
+			err := conn.Close()
+			closeMu.Lock()
+			closeErr = err
+			closeMu.Unlock()
+		})
+	}
+	stopCancellation := context.AfterFunc(ctx, closeConn)
+	defer func() {
+		stopCancellation()
+		closeConn()
+		closeMu.Lock()
+		retErr = errors.Join(retErr, closeErr)
+		closeMu.Unlock()
+	}()
 
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -138,7 +153,6 @@ func (c *Client) request(ctx context.Context, req daemon.Request) (daemon.Respon
 		}
 	}
 
-	var resp daemon.Response
 	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return daemon.Response{}, ctxErr

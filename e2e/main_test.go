@@ -3,6 +3,7 @@ package e2e
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,7 +20,7 @@ func TestMain(m *testing.M) {
 // run builds the bgx binary into a temp dir so tests exercise it as a black box.
 // BGX_E2E_BIN overrides the build with a prebuilt binary, letting CI point the
 // suite at the exact static build it uploads to a release.
-func run(m *testing.M) int {
+func run(m *testing.M) (exitCode int) {
 	if prebuilt := os.Getenv("BGX_E2E_BIN"); prebuilt != "" {
 		abs, err := filepath.Abs(prebuilt)
 		if err != nil {
@@ -33,7 +34,16 @@ func run(m *testing.M) int {
 	if err != nil {
 		panic(err)
 	}
-	defer os.RemoveAll(dir)
+	defer func() {
+		if err := os.RemoveAll(dir); err != nil {
+			if _, writeErr := fmt.Fprintf(os.Stderr, "failed to remove E2E build directory %s: %v\n", dir, err); writeErr != nil {
+				exitCode = 1
+			}
+			if exitCode == 0 {
+				exitCode = 1
+			}
+		}
+	}()
 
 	binPath = filepath.Join(dir, "bgx")
 	build := exec.Command("go", "build", "-o", binPath, "./cmd/bgx")

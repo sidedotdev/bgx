@@ -1,6 +1,7 @@
 package bgx
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -109,9 +110,7 @@ func usableDir(dir string) error {
 	if err != nil {
 		return err
 	}
-	probe.Close()
-	os.Remove(probe.Name())
-	return nil
+	return errors.Join(probe.Close(), os.Remove(probe.Name()))
 }
 
 // ensureDirs reports whether a usable base directory was found, returning a

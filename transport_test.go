@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -30,9 +31,18 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "make test runtime dir:", err)
 		os.Exit(1)
 	}
-	os.Setenv("XDG_RUNTIME_DIR", dir)
+	if err := os.Setenv("XDG_RUNTIME_DIR", dir); err != nil {
+		fmt.Fprintln(os.Stderr, "set test runtime dir:", err)
+		if removeErr := os.RemoveAll(dir); removeErr != nil {
+			fmt.Fprintln(os.Stderr, "remove test runtime dir:", removeErr)
+		}
+		os.Exit(1)
+	}
 	code := m.Run()
-	os.RemoveAll(dir)
+	if err := os.RemoveAll(dir); err != nil {
+		fmt.Fprintln(os.Stderr, "remove test runtime dir:", err)
+		code = 1
+	}
 	os.Exit(code)
 }
 
@@ -48,7 +58,11 @@ func listenFakeSession(t *testing.T, id string) net.Listener {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() {
+		if err := ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			t.Errorf("close listener: %v", err)
+		}
+	})
 	return ln
 }
 
@@ -66,13 +80,14 @@ func newBridgeStream(r io.Reader, w io.Writer) *bridgeStream {
 }
 
 func (s *bridgeStream) Close() error {
+	var closeErr error
 	s.closeOnce.Do(func() {
 		if c, ok := s.Reader.(io.Closer); ok {
-			c.Close()
+			closeErr = c.Close()
 		}
 		close(s.closed)
 	})
-	return nil
+	return closeErr
 }
 
 // expectStreamClosed asserts Bridge closed its stream before returning, which
@@ -97,25 +112,26 @@ func TestDialServesAsLocalDialer(t *testing.T) {
 			serverErr <- err
 			return
 		}
-		defer conn.Close()
-		line, err := bufio.NewReader(conn).ReadBytes('\n')
-		if err != nil {
-			serverErr <- fmt.Errorf("read request: %w", err)
-			return
+
+		line, requestErr := bufio.NewReader(conn).ReadBytes('\n')
+		if requestErr == nil {
+			var req daemon.Request
+			if err := json.Unmarshal(line, &req); err != nil {
+				requestErr = fmt.Errorf("decode request %q: %w", line, err)
+			} else if req.Op != "info" {
+				requestErr = fmt.Errorf("request op = %q, want %q", req.Op, "info")
+			} else if err := json.NewEncoder(conn).Encode(daemon.Response{
+				OK:   true,
+				Info: &daemon.Info{ID: id, Running: true},
+			}); err != nil {
+				requestErr = err
+			}
+		} else {
+			requestErr = fmt.Errorf("read request: %w", requestErr)
 		}
-		var req daemon.Request
-		if err := json.Unmarshal(line, &req); err != nil {
-			serverErr <- fmt.Errorf("decode request %q: %w", line, err)
-			return
-		}
-		if req.Op != "info" {
-			serverErr <- fmt.Errorf("request op = %q, want %q", req.Op, "info")
-			return
-		}
-		serverErr <- json.NewEncoder(conn).Encode(daemon.Response{
-			OK:   true,
-			Info: &daemon.Info{ID: id, Running: true},
-		})
+
+		closeErr := conn.Close()
+		serverErr <- errors.Join(requestErr, closeErr)
 	}()
 
 	client := NewClient(func(ctx context.Context) (io.ReadWriteCloser, error) {
@@ -135,7 +151,9 @@ func TestDialServesAsLocalDialer(t *testing.T) {
 
 func TestDialFailsWhenSessionSocketAbsent(t *testing.T) {
 	if conn, err := Dial(context.Background(), "no-such-session"); err == nil {
-		conn.Close()
+		if closeErr := conn.Close(); closeErr != nil {
+			t.Fatalf("close unexpected connection: %v", closeErr)
+		}
 		t.Fatal("Dial returned nil error for an absent socket")
 	}
 }
@@ -148,7 +166,9 @@ func TestDialHonorsCanceledContext(t *testing.T) {
 	cancel()
 	conn, err := Dial(ctx, id)
 	if err == nil {
-		conn.Close()
+		if closeErr := conn.Close(); closeErr != nil {
+			t.Fatalf("close unexpected connection: %v", closeErr)
+		}
 		t.Fatal("Dial returned nil error with a canceled context")
 	}
 	if !errors.Is(err, context.Canceled) {
@@ -172,22 +192,27 @@ func TestBridgeProxiesBytesVerbatimUntilSessionCloses(t *testing.T) {
 			serverErr <- err
 			return
 		}
-		defer conn.Close()
+
 		got := make([]byte, len(inbound))
+		var serveErr error
 		if _, err := io.ReadFull(conn, got); err != nil {
-			serverErr <- fmt.Errorf("read inbound: %w", err)
-			return
+			serveErr = fmt.Errorf("read inbound: %w", err)
+		} else if !bytes.Equal(got, inbound) {
+			serveErr = fmt.Errorf("inbound = %q, want %q", got, inbound)
+		} else {
+			_, serveErr = conn.Write(outbound)
 		}
-		if !bytes.Equal(got, inbound) {
-			serverErr <- fmt.Errorf("inbound = %q, want %q", got, inbound)
-			return
-		}
-		_, err = conn.Write(outbound)
-		serverErr <- err
+
+		closeErr := conn.Close()
+		serverErr <- errors.Join(serveErr, closeErr)
 	}()
 
 	inR, inW := io.Pipe()
-	defer inW.Close()
+	t.Cleanup(func() {
+		if err := inW.Close(); err != nil {
+			t.Errorf("close inbound writer: %v", err)
+		}
+	})
 	var out bytes.Buffer
 	stream := newBridgeStream(inR, &out)
 	done := make(chan error, 1)
@@ -226,20 +251,20 @@ func TestBridgeHalfClosesSessionWriteSideOnCallerEOF(t *testing.T) {
 			serverErr <- err
 			return
 		}
-		defer conn.Close()
+
 		// The caller's EOF must surface as EOF here while the connection still
 		// carries the reply back.
-		got, err := io.ReadAll(conn)
-		if err != nil {
-			serverErr <- fmt.Errorf("read inbound: %w", err)
-			return
+		got, serveErr := io.ReadAll(conn)
+		if serveErr != nil {
+			serveErr = fmt.Errorf("read inbound: %w", serveErr)
+		} else if string(got) != "request" {
+			serveErr = fmt.Errorf("inbound = %q, want %q", got, "request")
+		} else {
+			_, serveErr = conn.Write([]byte("reply"))
 		}
-		if string(got) != "request" {
-			serverErr <- fmt.Errorf("inbound = %q, want %q", got, "request")
-			return
-		}
-		_, err = conn.Write([]byte("reply"))
-		serverErr <- err
+
+		closeErr := conn.Close()
+		serverErr <- errors.Join(serveErr, closeErr)
 	}()
 
 	inR, inW := io.Pipe()
@@ -279,20 +304,27 @@ func TestBridgeCancellationClosesConnection(t *testing.T) {
 
 	accepted := make(chan struct{})
 	serverClosed := make(chan struct{})
+	serverErr := make(chan error, 1)
 	go func() {
 		conn, err := ln.Accept()
 		close(accepted)
 		if err != nil {
+			serverErr <- err
 			close(serverClosed)
 			return
 		}
-		_, _ = io.Copy(io.Discard, conn)
-		conn.Close()
+		_, copyErr := io.Copy(io.Discard, conn)
+		closeErr := conn.Close()
+		serverErr <- errors.Join(copyErr, closeErr)
 		close(serverClosed)
 	}()
 
 	inR, inW := io.Pipe()
-	defer inW.Close()
+	t.Cleanup(func() {
+		if err := inW.Close(); err != nil {
+			t.Errorf("close inbound writer: %v", err)
+		}
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	stream := newBridgeStream(inR, io.Discard)
@@ -318,6 +350,9 @@ func TestBridgeCancellationClosesConnection(t *testing.T) {
 	}
 	select {
 	case <-serverClosed:
+		if err := <-serverErr; err != nil && !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("session server: %v", err)
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("bridge connection was not closed after cancellation")
 	}
@@ -334,20 +369,29 @@ func TestBridgePropagatesCallerReadError(t *testing.T) {
 	ln := listenFakeSession(t, id)
 
 	release := make(chan struct{})
-	defer close(release)
+	var releaseOnce sync.Once
+	releaseServer := func() {
+		releaseOnce.Do(func() {
+			close(release)
+		})
+	}
+	defer releaseServer()
+
 	serverErr := make(chan error, 1)
+	serverCloseErr := make(chan error, 1)
 	go func() {
 		conn, err := ln.Accept()
 		if err != nil {
 			serverErr <- err
+			serverCloseErr <- nil
 			return
 		}
-		defer conn.Close()
 		// Drain whatever arrives before the caller stream breaks, then hold
 		// the connection open: Bridge itself must unblock its outbound copy.
 		_, err = io.Copy(io.Discard, conn)
 		serverErr <- err
 		<-release
+		serverCloseErr <- conn.Close()
 	}()
 
 	want := errors.New("caller stream broke")
@@ -365,7 +409,11 @@ func TestBridgePropagatesCallerReadError(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Bridge did not return while the session side stayed open")
 	}
-	if err := <-serverErr; err != nil {
+
+	serveErr := <-serverErr
+	releaseServer()
+	closeErr := <-serverCloseErr
+	if err := errors.Join(serveErr, closeErr); err != nil {
 		t.Fatalf("server: %v", err)
 	}
 	expectStreamClosed(t, stream)
@@ -373,10 +421,97 @@ func TestBridgePropagatesCallerReadError(t *testing.T) {
 
 func TestBridgeFailsWhenSessionSocketAbsent(t *testing.T) {
 	inR, inW := io.Pipe()
-	defer inW.Close()
+	t.Cleanup(func() {
+		if err := inW.Close(); err != nil {
+			t.Errorf("close inbound writer: %v", err)
+		}
+	})
 	stream := newBridgeStream(inR, io.Discard)
 	if err := Bridge(context.Background(), "no-such-session", stream); err == nil {
 		t.Fatal("Bridge returned nil error for an absent socket")
 	}
 	expectStreamClosed(t, stream)
+}
+
+type closeFailingBridgeStream struct {
+	*bridgeStream
+	err error
+}
+
+func (s *closeFailingBridgeStream) Close() error {
+	return errors.Join(s.bridgeStream.Close(), s.err)
+}
+
+func TestBridgeAggregatesDialAndCallerCloseErrors(t *testing.T) {
+	closeErr := errors.New("close caller stream")
+	inR, inW := io.Pipe()
+	t.Cleanup(func() {
+		if err := inW.Close(); err != nil {
+			t.Errorf("close inbound writer: %v", err)
+		}
+	})
+	stream := &closeFailingBridgeStream{
+		bridgeStream: newBridgeStream(inR, io.Discard),
+		err:          closeErr,
+	}
+
+	err := Bridge(context.Background(), "no-such-session", stream)
+	if err == nil {
+		t.Fatal("Bridge returned nil error for an absent socket")
+	}
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("Bridge error = %v, want caller close error", err)
+	}
+	expectStreamClosed(t, stream.bridgeStream)
+}
+
+func TestBridgeReturnsCallerCloseErrorAfterProxying(t *testing.T) {
+	const id = "bridge-close-error"
+	ln := listenFakeSession(t, id)
+
+	serverErr := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		if err := conn.Close(); err != nil {
+			serverErr <- err
+			return
+		}
+		serverErr <- nil
+	}()
+
+	closeErr := errors.New("close caller stream")
+	stream := &closeFailingBridgeStream{
+		bridgeStream: newBridgeStream(bytes.NewReader(nil), io.Discard),
+		err:          closeErr,
+	}
+	err := Bridge(context.Background(), id, stream)
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("Bridge error = %v, want caller close error", err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatalf("session server: %v", err)
+	}
+	expectStreamClosed(t, stream.bridgeStream)
+}
+func TestBridgeRetainsCallerCloseENOTCONN(t *testing.T) {
+	inR, inW := io.Pipe()
+	t.Cleanup(func() {
+		if err := inW.Close(); err != nil {
+			t.Errorf("close inbound writer: %v", err)
+		}
+	})
+	stream := &closeFailingBridgeStream{
+		bridgeStream: newBridgeStream(inR, io.Discard),
+		err:          syscall.ENOTCONN,
+	}
+
+	err := Bridge(context.Background(), "no-such-session", stream)
+	if !errors.Is(err, syscall.ENOTCONN) {
+		t.Fatalf("Bridge error = %v, want caller ENOTCONN", err)
+	}
+	expectStreamClosed(t, stream.bridgeStream)
 }

@@ -25,7 +25,11 @@ func runDir(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("make run dir: %v", err)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("remove run dir: %v", err)
+		}
+	})
 	return dir
 }
 
@@ -283,7 +287,14 @@ func TestRunConcurrentInvocationsRespectLimit(t *testing.T) {
 		if results[i].exitCode == 0 {
 			succeeded++
 			id := fmt.Sprintf("race/s%d", i)
-			t.Cleanup(func() { bgxIn(t, dir, "kill", id) })
+			t.Cleanup(func() {
+				res := bgxIn(t, dir, "kill", id)
+				if res.exitCode != 0 {
+					t.Errorf("kill %q exit code = %d, stderr=%q", id, res.exitCode, res.stderr)
+					return
+				}
+				waitEnded(t, dir, id)
+			})
 		}
 	}
 	if succeeded != limit {

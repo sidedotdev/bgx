@@ -41,8 +41,12 @@ func newTerm(t *testing.T) *Terminal {
 
 func TestDumpScreenReflectsFinalState(t *testing.T) {
 	term := newTerm(t)
-	term.Write([]byte("\x1b[2J\x1b[Hhello world"))
-	term.Write([]byte("\x1b[HHELLO"))
+	if _, err := term.Write([]byte("\x1b[2J\x1b[Hhello world")); err != nil {
+		t.Fatalf("write initial screen: %v", err)
+	}
+	if _, err := term.Write([]byte("\x1b[HHELLO")); err != nil {
+		t.Fatalf("write overwrite: %v", err)
+	}
 
 	dump, err := term.DumpScreen()
 	if err != nil {
@@ -61,9 +65,13 @@ func TestDumpScreenReflectsFinalState(t *testing.T) {
 
 func TestDumpScreenPreservesColor(t *testing.T) {
 	colored := newTerm(t)
-	colored.Write([]byte("\x1b[31mX\x1b[0m"))
+	if _, err := colored.Write([]byte("\x1b[31mX\x1b[0m")); err != nil {
+		t.Fatalf("write colored screen: %v", err)
+	}
 	plainTerm := newTerm(t)
-	plainTerm.Write([]byte("X"))
+	if _, err := plainTerm.Write([]byte("X")); err != nil {
+		t.Fatalf("write plain screen: %v", err)
+	}
 
 	cdump, err := colored.DumpScreen()
 	if err != nil {
@@ -80,7 +88,9 @@ func TestDumpScreenPreservesColor(t *testing.T) {
 
 func TestDumpScreenReplayReproducesScreen(t *testing.T) {
 	src := newTerm(t)
-	src.Write([]byte("\x1b[2J\x1b[Hline one\r\nline two\x1b[1;1HX"))
+	if _, err := src.Write([]byte("\x1b[2J\x1b[Hline one\r\nline two\x1b[1;1HX")); err != nil {
+		t.Fatalf("write source screen: %v", err)
+	}
 
 	snap, err := src.DumpScreen()
 	if err != nil {
@@ -88,7 +98,9 @@ func TestDumpScreenReplayReproducesScreen(t *testing.T) {
 	}
 
 	dst := newTerm(t)
-	dst.Write([]byte("\x1b[2J\x1b[H"))
+	if _, err := dst.Write([]byte("\x1b[2J\x1b[H")); err != nil {
+		t.Fatalf("clear destination screen: %v", err)
+	}
 	if _, err := dst.Write(snap); err != nil {
 		t.Fatalf("replay write: %v", err)
 	}
@@ -100,7 +112,9 @@ func TestDumpScreenReplayReproducesScreen(t *testing.T) {
 
 func TestResizeReflowsContent(t *testing.T) {
 	term := newTerm(t)
-	term.Write([]byte(strings.Repeat("a", 100)))
+	if _, err := term.Write([]byte(strings.Repeat("a", 100))); err != nil {
+		t.Fatalf("write content: %v", err)
+	}
 
 	if err := term.Resize(40, DefaultRows); err != nil {
 		t.Fatalf("Resize: %v", err)

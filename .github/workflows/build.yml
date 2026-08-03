@@ -146,6 +146,12 @@ jobs:
             printf 'PKG_CONFIG_LIBDIR=%s\n' "$pcdir"
           } >> "$GITHUB_ENV"
 
+      - name: lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.4.0
+          args: ./...
+
       # Unit tests run against the packages directly; the black-box suite runs
       # separately below against the uploaded static binary.
       - name: unit tests

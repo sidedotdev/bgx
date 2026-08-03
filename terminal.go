@@ -3,19 +3,24 @@ package bgx
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"sync"
-	"syscall"
 
 	"golang.org/x/term"
 )
+
+// ErrTerminalSizeUnavailable indicates that a terminal temporarily has no
+// usable dimensions. Attach continues without resizing until dimensions become
+// available.
+var ErrTerminalSizeUnavailable = errors.New("terminal size unavailable")
 
 // Terminal is the interactive terminal used by Client.Attach.
 type Terminal interface {
 	io.Reader
 	io.Writer
+	ReadContext(context.Context, []byte) (int, error)
 	Size() (cols, rows uint16, err error)
 	ResizeEvents(context.Context) <-chan struct{}
 	EnterRaw() error
@@ -49,41 +54,14 @@ func (t *ProcessTerminal) Write(p []byte) (int, error) {
 
 // Size returns the process terminal's current dimensions.
 func (t *ProcessTerminal) Size() (cols, rows uint16, err error) {
-	fd := int(t.in.Fd())
-	if !term.IsTerminal(fd) {
-		return 0, 0, errors.New("stdin is not a terminal")
-	}
-	width, height, err := term.GetSize(fd)
+	width, height, err := term.GetSize(int(t.in.Fd()))
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, normalizeTerminalSizeError(err)
 	}
 	if width <= 0 || height <= 0 || width > int(^uint16(0)) || height > int(^uint16(0)) {
-		return 0, 0, errors.New("terminal has invalid dimensions")
+		return 0, 0, fmt.Errorf("%w: width=%d height=%d", ErrTerminalSizeUnavailable, width, height)
 	}
 	return uint16(width), uint16(height), nil
-}
-
-// ResizeEvents reports process terminal resize notifications until ctx ends.
-func (t *ProcessTerminal) ResizeEvents(ctx context.Context) <-chan struct{} {
-	events := make(chan struct{}, 1)
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGWINCH)
-	go func() {
-		defer close(events)
-		defer signal.Stop(signals)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-signals:
-				select {
-				case events <- struct{}{}:
-				default:
-				}
-			}
-		}
-	}()
-	return events
 }
 
 // EnterRaw places the process terminal in raw mode. It is a no-op when stdin is

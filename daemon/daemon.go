@@ -59,6 +59,8 @@ const (
 	connDrainGrace = 2 * time.Second
 )
 
+var errConnectionDrainTimeout = errors.New("timed out draining connection handlers")
+
 // Config describes the session a daemon serves.
 type Config struct {
 	ID             string
@@ -76,9 +78,11 @@ type Session struct {
 	store *scrollback.Store
 	term  *vt.Terminal
 
-	listener net.Listener
-	done     chan struct{} // closed when the command has exited and been reaped
-	outDone  chan struct{} // closed when all PTY output has been consumed
+	listener   net.Listener
+	done       chan struct{} // closed when the command has exited and been reaped
+	outDone    chan struct{} // closed when all PTY output has been consumed
+	inputDone  chan struct{} // closed when the PTY input pump has stopped
+	acceptDone chan struct{} // closed when the listener accept loop has stopped
 
 	// outMu serializes terminal writes with output fanout and attach snapshots
 	// so a newly attached client neither misses nor duplicates output.
@@ -90,20 +94,25 @@ type Session struct {
 	outScan    vtscan.Scanner
 	outPending []byte
 
-	mu          sync.Mutex
-	cond        *sync.Cond
-	cmd         *exec.Cmd
-	ptmx        *os.File
-	startedAt   time.Time
-	endedAt     time.Time
-	exitCode    int
-	ended       bool
-	killed      bool
-	closing     bool
-	clientCount int
-	inputBuf    []byte
-	conns       sync.WaitGroup
-	attachers   map[*attacher]struct{}
+	mu               sync.Mutex
+	cond             *sync.Cond
+	cmd              *exec.Cmd
+	ptmx             *os.File
+	startedAt        time.Time
+	endedAt          time.Time
+	exitCode         int
+	ended            bool
+	killed           bool
+	closing          bool
+	clientCount      int
+	inputBuf         []byte
+	outputErr        error
+	inputErr         error
+	acceptErr        error
+	handlerErr       error
+	connDrainTimeout time.Duration
+	conns            sync.WaitGroup
+	attachers        map[*attacher]struct{}
 }
 
 // Serve runs the configured command to completion: it creates the socket,
@@ -123,17 +132,17 @@ func Serve(cfg Config) error {
 // and history, and removes the socket. It blocks until the session has ended.
 func (s *Session) run() error {
 	if err := s.listen(); err != nil {
-		s.store.Close()
+		closeErr := s.store.Close()
 		s.term.Close()
-		return err
+		return errors.Join(err, closeErr)
 	}
 	if err := s.start(); err != nil {
-		s.persistSpawnError(err)
-		s.listener.Close()
-		os.Remove(s.cfg.SocketPath)
-		s.store.Close()
+		persistErr := s.persistSpawnError(err)
+		listenerErr := s.listener.Close()
+		removeErr := removeSocket(s.cfg.SocketPath)
+		storeErr := s.store.Close()
 		s.term.Close()
-		return err
+		return errors.Join(err, persistErr, listenerErr, removeErr, storeErr)
 	}
 
 	go s.acceptLoop()
@@ -147,7 +156,8 @@ func (s *Session) run() error {
 	s.mu.Lock()
 	s.closing = true
 	s.mu.Unlock()
-	s.listener.Close()
+	listenerErr := s.listener.Close()
+	<-s.acceptDone
 
 	// Drain and close the PTY output path independently of client handlers so a
 	// slow or non-reading client can't delay capturing final output or block
@@ -157,37 +167,48 @@ func (s *Session) run() error {
 	case <-s.outDone:
 	case <-time.After(outputDrainGrace):
 	}
-	s.ptmx.Close()
+	ptyErr := s.ptmx.Close()
 	<-s.outDone
+	<-s.inputDone
 
 	// All output has now been fanned out. Tell still-attached clients the
 	// session ended so they receive every byte still queued, then a final ended
 	// frame, and close on their own instead of racing the drain grace below.
 	s.endAttachers()
 
-	perr := s.persist()
-	os.Remove(s.cfg.SocketPath)
+	persistErr := s.persist()
+	removeErr := removeSocket(s.cfg.SocketPath)
 
 	// Give in-flight handlers a bounded window to flush their responses before
 	// the process exits, without letting a stuck client hang shutdown.
-	waitConns(&s.conns, connDrainGrace)
+	connErr := waitConns(&s.conns, s.connDrainTimeout)
 
-	s.store.Close()
+	s.mu.Lock()
+	outputErr := s.outputErr
+	inputErr := s.inputErr
+	acceptErr := s.acceptErr
+	handlerErr := s.handlerErr
+	s.mu.Unlock()
+	storeErr := s.store.Close()
 	s.term.Close()
-	return perr
+	return errors.Join(listenerErr, ptyErr, outputErr, inputErr, acceptErr, handlerErr, connErr, persistErr, removeErr, storeErr)
 }
 
-// waitConns waits for all in-flight connection handlers to finish, or for d to
-// elapse, whichever comes first.
-func waitConns(wg *sync.WaitGroup, d time.Duration) {
+// waitConns waits for all in-flight connection handlers to finish, or reports
+// that the bounded drain elapsed while at least one handler remained active.
+func waitConns(wg *sync.WaitGroup, d time.Duration) error {
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
 		close(done)
 	}()
+	timer := time.NewTimer(d)
+	defer timer.Stop()
 	select {
 	case <-done:
-	case <-time.After(d):
+		return nil
+	case <-timer.C:
+		return errConnectionDrainTimeout
 	}
 }
 
@@ -198,16 +219,18 @@ func newSession(cfg Config) (*Session, error) {
 	}
 	term, err := vt.New(defaultCols, defaultRows)
 	if err != nil {
-		store.Close()
-		return nil, err
+		return nil, errors.Join(err, store.Close())
 	}
 	s := &Session{
-		cfg:       cfg,
-		store:     store,
-		term:      term,
-		done:      make(chan struct{}),
-		outDone:   make(chan struct{}),
-		attachers: make(map[*attacher]struct{}),
+		cfg:              cfg,
+		store:            store,
+		term:             term,
+		done:             make(chan struct{}),
+		outDone:          make(chan struct{}),
+		inputDone:        make(chan struct{}),
+		acceptDone:       make(chan struct{}),
+		connDrainTimeout: connDrainGrace,
+		attachers:        make(map[*attacher]struct{}),
 	}
 	s.cond = sync.NewCond(&s.mu)
 	return s, nil
@@ -218,7 +241,9 @@ func (s *Session) listen() error {
 	if err := os.MkdirAll(filepath.Dir(s.cfg.SocketPath), 0o700); err != nil {
 		return err
 	}
-	os.Remove(s.cfg.SocketPath)
+	if err := removeSocket(s.cfg.SocketPath); err != nil {
+		return err
+	}
 	ln, err := net.Listen("unix", s.cfg.SocketPath)
 	if err != nil {
 		return err
@@ -278,13 +303,26 @@ func (s *Session) reap() {
 // that all output has been captured.
 func (s *Session) pumpOutput() {
 	defer close(s.outDone)
+	s.pumpOutputFrom(s.ptmx)
+}
+
+func (s *Session) pumpOutputFrom(r io.Reader) {
+	recordError := func(err error) {
+		if err == nil {
+			return
+		}
+		s.mu.Lock()
+		s.outputErr = errors.Join(s.outputErr, err)
+		s.mu.Unlock()
+	}
 	buf := make([]byte, 64<<10)
 	for {
-		n, err := s.ptmx.Read(buf)
+		n, err := r.Read(buf)
 		if n > 0 {
 			data := buf[:n]
-			s.store.Write(data)
-			s.feedTerm(data, false)
+			_, storeErr := s.store.Write(data)
+			recordError(storeErr)
+			recordError(s.feedTerm(data, false))
 			if s.noClients() {
 				if resp := scanDeviceAttributes(data); len(resp) > 0 {
 					s.queueInput(resp)
@@ -292,7 +330,12 @@ func (s *Session) pumpOutput() {
 			}
 		}
 		if err != nil {
-			s.feedTerm(nil, true)
+			recordError(s.feedTerm(nil, true))
+			if !errors.Is(err, io.EOF) &&
+				!errors.Is(err, os.ErrClosed) &&
+				!errors.Is(err, syscall.EIO) {
+				recordError(err)
+			}
 			return
 		}
 	}
@@ -303,28 +346,39 @@ func (s *Session) pumpOutput() {
 // (s.term.DumpScreen) and the raw bytes streamed afterwards always tile
 // cleanly. The trailing partial sequence is buffered until a later read
 // completes it; flush forces any remainder through once the PTY reaches EOF.
-func (s *Session) feedTerm(data []byte, flush bool) {
+func (s *Session) feedTerm(data []byte, flush bool) error {
 	s.outPending = append(s.outPending, data...)
 	cut := len(s.outPending)
 	if !flush {
 		cut = s.outScan.SafeCut(s.outPending, len(s.outPending))
 	}
 	if cut <= 0 {
-		return
+		return nil
 	}
 	safe := s.outPending[:cut]
 	s.outScan.Advance(safe)
 	s.outMu.Lock()
-	s.term.Write(safe)
-	s.fanout(safe)
+	_, err := s.term.Write(safe)
+	if err == nil {
+		s.fanout(safe)
+	}
 	s.outMu.Unlock()
+	if err != nil {
+		return err
+	}
 	s.outPending = append(s.outPending[:0], s.outPending[cut:]...)
+	return nil
 }
 
 // pumpInput flushes queued bytes to the PTY. Running in its own goroutine means
 // a blocking write (child not reading) never stalls the daemon; the queue cap
 // bounds memory growth.
 func (s *Session) pumpInput() {
+	defer close(s.inputDone)
+	s.pumpInputTo(s.ptmx)
+}
+
+func (s *Session) pumpInputTo(w io.Writer) {
 	for {
 		s.mu.Lock()
 		for len(s.inputBuf) == 0 && !s.ended {
@@ -342,16 +396,23 @@ func (s *Session) pumpInput() {
 		chunk := append([]byte(nil), s.inputBuf...)
 		s.mu.Unlock()
 
-		n, err := s.ptmx.Write(chunk)
+		n, err := w.Write(chunk)
 
 		s.mu.Lock()
 		if n > 0 {
 			rest := s.inputBuf[n:]
 			s.inputBuf = append([]byte(nil), rest...)
 		}
+		if err != nil {
+			if !errors.Is(err, os.ErrClosed) && !errors.Is(err, syscall.EIO) {
+				s.inputErr = errors.Join(s.inputErr, err)
+			}
+		} else if n != len(chunk) {
+			s.inputErr = errors.Join(s.inputErr, io.ErrShortWrite)
+		}
 		s.mu.Unlock()
 
-		if err != nil && !errors.Is(err, io.ErrShortWrite) {
+		if err != nil || n != len(chunk) {
 			return
 		}
 	}
@@ -391,48 +452,99 @@ func (s *Session) retainedInput() int {
 // acceptLoop serves one request per accepted connection until the listener is
 // closed.
 func (s *Session) acceptLoop() {
+	defer close(s.acceptDone)
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
+			s.mu.Lock()
+			if !s.closing {
+				s.acceptErr = errors.Join(s.acceptErr, err)
+			}
+			s.mu.Unlock()
 			return
 		}
 		s.mu.Lock()
 		if s.closing {
 			s.mu.Unlock()
-			conn.Close()
+			s.recordHandlerError(conn.Close())
 			continue
 		}
 		s.conns.Add(1)
 		s.mu.Unlock()
-		go func() {
-			defer s.conns.Done()
-			s.handle(conn)
-		}()
+		go s.serveConn(conn)
 	}
+}
+
+func (s *Session) serveConn(conn net.Conn) {
+	defer s.conns.Done()
+	s.recordHandlerError(s.handle(conn))
+}
+
+func (s *Session) recordHandlerError(err error) {
+	err = withoutNetErrClosed(err)
+	if err == nil {
+		return
+	}
+	s.mu.Lock()
+	s.handlerErr = errors.Join(s.handlerErr, err)
+	s.mu.Unlock()
+}
+
+func withoutNetErrClosed(err error) error {
+	if err == nil {
+		return nil
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		remaining := make([]error, 0, len(children))
+		for _, child := range children {
+			if child = withoutNetErrClosed(child); child != nil {
+				remaining = append(remaining, child)
+			}
+		}
+		return errors.Join(remaining...)
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		child := withoutNetErrClosed(wrapped.Unwrap())
+		if child == nil {
+			return nil
+		}
+		if child != wrapped.Unwrap() {
+			return child
+		}
+	}
+	if errors.Is(err, net.ErrClosed) {
+		return nil
+	}
+	return err
 }
 
 // handle serves a single accepted connection. Most ops are one request/response
 // over JSON lines; an "attach" request instead upgrades the connection to the
 // bidirectional frame protocol for the remainder of its lifetime.
-func (s *Session) handle(conn net.Conn) {
-	defer conn.Close()
+func (s *Session) handle(conn net.Conn) (retErr error) {
+	defer func() {
+		retErr = errors.Join(retErr, conn.Close())
+	}()
 	// Read exactly the request line so its trailing newline is consumed and the
 	// reader can be reused for binary attach frames without corrupting framing.
 	br := bufio.NewReader(conn)
 	line, err := br.ReadBytes('\n')
 	if err != nil && len(line) == 0 {
-		return
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		return err
 	}
 	var req Request
 	if err := json.Unmarshal(line, &req); err != nil {
-		return
+		return err
 	}
 	if req.Op == "attach" {
-		s.serveAttach(conn, br)
-		return
+		return s.serveAttach(conn, br)
 	}
 	resp := s.dispatch(req)
-	_ = json.NewEncoder(conn).Encode(resp)
+	return json.NewEncoder(conn).Encode(resp)
 }
 
 func (s *Session) dispatch(req Request) Response {
@@ -443,14 +555,20 @@ func (s *Session) dispatch(req Request) Response {
 		code := s.waitForExit()
 		return Response{OK: true, Info: s.info(), ExitCode: &code}
 	case "kill":
-		s.kill()
+		if err := s.kill(); err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
 		code := s.waitForExit()
 		return Response{OK: true, Info: s.info(), ExitCode: &code}
 	case "send":
 		s.queueInput(req.Input)
 		return Response{OK: true}
 	case "history":
-		return Response{OK: true, History: s.store.Snapshot()}
+		history := s.store.Snapshot()
+		if err := s.store.Err(); err != nil {
+			return Response{OK: false, Error: err.Error()}
+		}
+		return Response{OK: true, History: history}
 	default:
 		return Response{OK: false, Error: fmt.Sprintf("unknown op %q", req.Op)}
 	}
@@ -468,24 +586,29 @@ func (s *Session) waitForExit() int {
 
 // kill terminates the command's process group following zmx's ladder: SIGHUP,
 // a grace period, then SIGKILL. It returns once the command has been reaped.
-func (s *Session) kill() {
+func (s *Session) kill() error {
 	s.mu.Lock()
 	if s.ended {
 		s.mu.Unlock()
-		return
+		return nil
 	}
 	s.killed = true
 	pid := s.cmd.Process.Pid
 	s.mu.Unlock()
 
-	syscall.Kill(-pid, syscall.SIGHUP)
+	if err := syscall.Kill(-pid, syscall.SIGHUP); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return err
+	}
 	select {
 	case <-s.done:
-		return
+		return nil
 	case <-time.After(killGrace):
 	}
-	syscall.Kill(-pid, syscall.SIGKILL)
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return err
+	}
 	<-s.done
+	return nil
 }
 
 // info captures the current metadata snapshot for the session.
@@ -542,11 +665,10 @@ func (s *Session) resize(cols, rows uint16) error {
 const spawnFailureExitCode = 127
 
 // persistSpawnError records an ended session whose command never started so a
-// client can discover the cause instead of only timing out on the socket. Any
-// write error is ignored: the daemon is already failing and about to exit.
-func (s *Session) persistSpawnError(cause error) {
+// client can discover the cause instead of only timing out on the socket.
+func (s *Session) persistSpawnError(cause error) error {
 	if s.cfg.RetentionDir == "" {
-		return
+		return nil
 	}
 	now := time.Now()
 	code := spawnFailureExitCode
@@ -560,16 +682,24 @@ func (s *Session) persistSpawnError(cause error) {
 		ExitCode:  &code,
 		Error:     cause.Error(),
 	}
-	_ = writeRecord(s.cfg.RetentionDir, info, s.store.Snapshot())
+	history := s.store.Snapshot()
+	if err := s.store.Err(); err != nil {
+		return err
+	}
+	return writeRecord(s.cfg.RetentionDir, info, history)
 }
 
 // persist writes the ended session's record and retained history to the
 // retention directory.
 func (s *Session) persist() error {
 	if s.cfg.RetentionDir == "" {
-		return nil
+		return s.store.Err()
 	}
-	if err := writeRecord(s.cfg.RetentionDir, s.info(), s.store.Snapshot()); err != nil {
+	history := s.store.Snapshot()
+	if err := s.store.Err(); err != nil {
+		return err
+	}
+	if err := writeRecord(s.cfg.RetentionDir, s.info(), history); err != nil {
 		return err
 	}
 	keep := s.cfg.RetentionCount
@@ -578,7 +708,11 @@ func (s *Session) persist() error {
 	}
 	// Sessions still running in this namespace count toward the retention
 	// budget, so reserve a slot for each; the just-ended record is always kept.
-	keep -= activeNamespaceSessions(filepath.Dir(s.cfg.SocketPath), s.cfg.ID)
+	active, err := activeNamespaceSessions(filepath.Dir(s.cfg.SocketPath), s.cfg.ID)
+	if err != nil {
+		return err
+	}
+	keep -= active
 	if keep < 1 {
 		keep = 1
 	}
@@ -599,4 +733,12 @@ func conventionalExitCode(err error) int {
 		return ee.ExitCode()
 	}
 	return -1
+}
+
+func removeSocket(path string) error {
+	err := os.Remove(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }

@@ -18,10 +18,22 @@ intent_links:
       - daemon/daemon.go:Session
   - intent: "#attach-handoff"
     code:
+      - attach.go:attachAction
+      - attach.go:startTransportProcess
+      - attach.go:transportConn.Close
       - daemon/attach.go:serveAttach
       - daemon/daemon.go:pumpOutput
       - daemon/daemon_test.go:TestAttachSnapshotStreamCoversEntireOutput
       - client_attach.go:runTerminalAttach
+      - client_attach_test.go:TestClientAttachSkipsUnavailableSizeUntilValidResize
+      - client_attach_test.go:TestClientAttachReportsActionableSizeError
+      - client_attach_test.go:TestClientAttachWaitsForResizeWorkerBeforeRestore
+      - client_attach_test.go:TestClientAttachWaitsForBlockedInputBeforeRestore
+      - client_attach_test.go:TestClientAttachReportsTerminalWriteFailure
+      - client_attach_test.go:TestClientAttachReportsTerminalRestoreFailure
+      - client_attach_test.go:TestClientAttachReportsInitialResizeFailure
+      - client_attach_test.go:TestClientAttachReportsMalformedDaemonFrame
+      - client_attach_test.go:TestClientAttachDetachIsSuccessful
       - attachview.go:attachView
       - attachview.go:paint
       - e2e/attach_test.go:TestAttachShowDetachInstructionsSurvivesDestructiveOutput

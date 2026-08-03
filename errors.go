@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
+	"io"
 
 	cli "github.com/urfave/cli/v3"
 )
@@ -28,8 +28,9 @@ const (
 // codedError attaches a machine-readable code to an error so the top-level
 // handler can include it in the JSON error payload.
 type codedError struct {
-	code string
-	err  error
+	code    string
+	err     error
+	payload map[string]any
 }
 
 func (e *codedError) Error() string { return e.err.Error() }
@@ -49,29 +50,38 @@ func errorCode(err error) string {
 // consumers can distinguish them from output of the wrapped command.
 const errorSource = "bgx"
 
-// emitErrorJSON writes the machine-readable error payload to stderr, keeping
-// stdout reserved for successful command output.
-func emitErrorJSON(code, msg string) {
-	_ = printJSON(os.Stderr, map[string]string{"error": msg, "code": code, "source": errorSource})
+// emitErrorJSON writes the machine-readable error payload to w, keeping stdout
+// reserved for successful command output.
+func emitErrorJSON(w io.Writer, code, msg string, extra ...map[string]any) error {
+	payload := map[string]any{"error": msg, "code": code, "source": errorSource}
+	for _, fields := range extra {
+		for key, value := range fields {
+			if key != "error" && key != "code" && key != "source" {
+				payload[key] = value
+			}
+		}
+	}
+	return printJSON(w, payload)
 }
 
-// failJSON prints a JSON error object (message plus code) to stderr and exits
-// non-zero so failures stay machine-readable for every command.
+// failJSON returns a coded error for the top-level runner to emit as JSON.
 func failJSON(code, format string, args ...any) error {
-	emitErrorJSON(code, fmt.Sprintf(format, args...))
-	os.Exit(1)
-	return nil
+	return &codedError{code: code, err: fmt.Errorf(format, args...)}
 }
 
 // applyJSONUsageErrors suppresses urfave/cli's plain-text usage-error and
 // unknown-command output on cmd and all its subcommands, so parse failures
 // surface as JSON on stderr like every other error.
+type commandErrorKey struct{}
+
 func applyJSONUsageErrors(cmd *cli.Command) {
 	cmd.OnUsageError = func(_ context.Context, _ *cli.Command, err error, _ bool) error {
 		return &codedError{code: codeInvalidArgument, err: err}
 	}
-	cmd.CommandNotFound = func(_ context.Context, _ *cli.Command, name string) {
-		_ = failJSON(codeInvalidArgument, "unknown command %q", name)
+	cmd.CommandNotFound = func(ctx context.Context, _ *cli.Command, name string) {
+		if commandErr, ok := ctx.Value(commandErrorKey{}).(*error); ok {
+			*commandErr = failJSON(codeInvalidArgument, "unknown command %q", name)
+		}
 	}
 	for _, sub := range cmd.Commands {
 		applyJSONUsageErrors(sub)

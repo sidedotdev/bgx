@@ -71,7 +71,7 @@ func (e *StartupError) Unwrap() error { return e.Err }
 // current executable re-exec'd with a private marker, so host binaries must
 // call InterceptDaemon first in main(). ctx bounds only the readiness wait;
 // the session itself outlives the caller.
-func Start(ctx context.Context, id string, command []string, opts StartOptions) (*Info, error) {
+func Start(ctx context.Context, id string, command []string, opts StartOptions) (info *Info, retErr error) {
 	if id == "" {
 		return nil, errors.New("id must not be empty")
 	}
@@ -99,7 +99,9 @@ func Start(ctx context.Context, id string, command []string, opts StartOptions) 
 	if err != nil {
 		return nil, err
 	}
-	defer unlock()
+	defer func() {
+		retErr = errors.Join(retErr, unlock())
+	}()
 
 	if _, ok := liveInfo(id); ok {
 		return nil, fmt.Errorf("session %q: %w", id, ErrSessionRunning)
@@ -133,9 +135,11 @@ func Start(ctx context.Context, id string, command []string, opts StartOptions) 
 	if err != nil {
 		return nil, &StartupError{ID: id, Err: err}
 	}
-	defer os.Remove(stderrPath)
+	defer func() {
+		retErr = joinDaemonFileCleanupError(retErr, stderrPath, os.Remove)
+	}()
 
-	info, err := waitForSession(ctx, id, dc, stderrPath, socketReadyTimeout)
+	info, err = waitForSession(ctx, id, dc, stderrPath, socketReadyTimeout)
 	if err != nil {
 		return nil, &StartupError{ID: id, Err: err}
 	}
@@ -143,4 +147,11 @@ func Start(ctx context.Context, id string, command []string, opts StartOptions) 
 		return nil, &StartupError{ID: id, Err: fmt.Errorf("session %q failed to start: %s", id, info.Error)}
 	}
 	return info, nil
+}
+func joinDaemonFileCleanupError(current error, path string, remove func(string) error) error {
+	err := remove(path)
+	if err == nil || errors.Is(err, os.ErrNotExist) {
+		return current
+	}
+	return errors.Join(current, fmt.Errorf("remove daemon stderr %q: %w", path, err))
 }

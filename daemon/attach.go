@@ -5,6 +5,8 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -56,17 +58,16 @@ func (a *attacher) signalClose() {
 // protocol: it acks the handshake, replays the current screen as the first
 // Output frame, streams subsequent PTY output, and applies the client's Input
 // and Resize frames. r reads inbound frames; conn is written for replies.
-func (s *Session) serveAttach(conn net.Conn, r io.Reader) {
+func (s *Session) serveAttach(conn net.Conn, r io.Reader) error {
 	s.mu.Lock()
 	ended := s.ended || s.closing
 	s.mu.Unlock()
 	enc := json.NewEncoder(conn)
 	if ended {
-		_ = enc.Encode(Response{OK: false, Error: "session has ended"})
-		return
+		return enc.Encode(Response{OK: false, Error: "session has ended"})
 	}
 	if err := enc.Encode(Response{OK: true}); err != nil {
-		return
+		return err
 	}
 
 	a := &attacher{conn: conn}
@@ -75,20 +76,27 @@ func (s *Session) serveAttach(conn net.Conn, r io.Reader) {
 	// Capture the snapshot and join the fanout atomically so no output is lost
 	// or duplicated between rendering the screen and subscribing to the stream.
 	s.outMu.Lock()
-	snap, _ := s.term.DumpScreen()
-	s.mu.Lock()
-	s.attachers[a] = struct{}{}
-	s.clientCount++
-	s.mu.Unlock()
+	snap, err := s.term.DumpScreen()
+	if err == nil {
+		s.mu.Lock()
+		s.attachers[a] = struct{}{}
+		s.clientCount++
+		s.mu.Unlock()
+	}
 	s.outMu.Unlock()
+	if err != nil {
+		return err
+	}
 
-	writerDone := make(chan struct{})
+	writerDone := make(chan error, 1)
 	go s.attachWriter(a, snap, writerDone)
 
 	// Ask the client for its window size so the PTY tracks the smallest
 	// attached client.
 	s.enqueueFrame(a, outFrame{tag: FrameResize})
 
+	var resizeErr error
+readFrames:
 	for {
 		tag, payload, err := ReadFrame(r)
 		if err != nil {
@@ -102,7 +110,10 @@ func (s *Session) serveAttach(conn net.Conn, r io.Reader) {
 			s.attachInput(a, payload)
 		case FrameResize:
 			if rp, ok := DecodeResize(payload); ok {
-				s.attachResize(a, rp)
+				resizeErr = s.attachResize(a, rp)
+				if resizeErr != nil {
+					break readFrames
+				}
 			}
 		}
 	}
@@ -112,17 +123,18 @@ func (s *Session) serveAttach(conn net.Conn, r io.Reader) {
 	s.clientCount--
 	s.mu.Unlock()
 	// The smallest client may have left; grow the PTY back to the new minimum.
-	s.applyMinSize()
+	resizeErr = errors.Join(resizeErr, s.applyMinSize())
 	a.signalClose()
-	<-writerDone
+	writerErr := <-writerDone
+	return errors.Join(resizeErr, writerErr)
 }
 
 // attachWriter serializes all frames sent to a single client; it is the only
 // writer of conn after the handshake ack, so concurrent output and resize
 // requests can't interleave on the wire.
-func (s *Session) attachWriter(a *attacher, snap []byte, done chan struct{}) {
-	defer close(done)
+func (s *Session) attachWriter(a *attacher, snap []byte, done chan<- error) {
 	if err := WriteFrame(a.conn, FrameOutput, snap); err != nil {
+		done <- errors.Join(err, a.conn.Close())
 		return
 	}
 	for {
@@ -132,6 +144,7 @@ func (s *Session) attachWriter(a *attacher, snap []byte, done chan struct{}) {
 		}
 		if a.closed {
 			a.mu.Unlock()
+			done <- nil
 			return
 		}
 		// deliverOutput already dropped the stale pre-snapshot backlog when it
@@ -146,6 +159,7 @@ func (s *Session) attachWriter(a *attacher, snap []byte, done chan struct{}) {
 			a.resync = nil
 			a.mu.Unlock()
 			if err := WriteFrame(a.conn, FrameResync, resync); err != nil {
+				done <- errors.Join(err, a.conn.Close())
 				return
 			}
 			continue
@@ -154,12 +168,13 @@ func (s *Session) attachWriter(a *attacher, snap []byte, done chan struct{}) {
 		a.buf = a.buf[1:]
 		a.mu.Unlock()
 		if err := WriteFrame(a.conn, f.tag, f.payload); err != nil {
+			done <- errors.Join(err, a.conn.Close())
 			return
 		}
 		// A session-ended frame is the last thing a client receives: close the
 		// connection so its serveAttach reader unblocks and shuts down.
 		if f.tag == FrameEnded {
-			a.conn.Close()
+			done <- a.conn.Close()
 			return
 		}
 	}
@@ -204,8 +219,12 @@ func (s *Session) deliverOutput(a *attacher, data []byte) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if len(a.buf) >= attachQueue {
+		snap, err := s.term.DumpScreen()
+		if err != nil {
+			s.recordHandlerError(fmt.Errorf("dump screen for attach resync: %w", err))
+			return
+		}
 		a.buf = a.buf[:0]
-		snap, _ := s.term.DumpScreen()
 		// DumpScreen assumes a pre-cleared screen, so prepend a clear+home.
 		a.resync = append([]byte("\x1b[2J\x1b[H"), snap...)
 		a.cond.Signal()
@@ -248,26 +267,27 @@ func (s *Session) attachInput(a *attacher, payload []byte) {
 // attachResize records the reporting client's window size and reflows the PTY
 // and emulated terminal to the smallest size across all attached clients so
 // every client sees output that fits its window.
-func (s *Session) attachResize(a *attacher, rp ResizePayload) {
+func (s *Session) attachResize(a *attacher, rp ResizePayload) error {
 	if rp.Rows == 0 || rp.Cols == 0 {
-		return
+		return nil
 	}
 	s.mu.Lock()
 	a.cols, a.rows = rp.Cols, rp.Rows
 	s.mu.Unlock()
-	s.applyMinSize()
+	return s.applyMinSize()
 }
 
 // applyMinSize reflows the PTY and emulated terminal to the smallest cols and
 // rows reported across attached clients, taken independently per dimension. It
 // is a no-op until at least one client has reported its size.
-func (s *Session) applyMinSize() {
+func (s *Session) applyMinSize() error {
 	s.mu.Lock()
 	cols, rows, ok := s.minSize()
 	s.mu.Unlock()
-	if ok {
-		_ = s.resize(cols, rows)
+	if !ok {
+		return nil
 	}
+	return s.resize(cols, rows)
 }
 
 // minSize returns the smallest reported cols and rows independently across all

@@ -4,12 +4,15 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -42,7 +45,11 @@ func startSessionObjMeta(t *testing.T, id string, cmd []string, md map[string]st
 	if err != nil {
 		t.Fatalf("mkdtemp: %v", err)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("remove temp directory: %v", err)
+		}
+	})
 	socketPath = filepath.Join(dir, "sock")
 	retentionDir = filepath.Join(dir, "ended")
 	cfg := Config{
@@ -70,7 +77,9 @@ func waitForSocket(t *testing.T, path string, ended <-chan struct{}) {
 		// A successful dial (not merely the file existing) confirms the listener
 		// is accepting, avoiding a transient connection-refused race at startup.
 		if conn, err := net.Dial("unix", path); err == nil {
-			conn.Close()
+			if err := conn.Close(); err != nil {
+				t.Fatalf("close readiness connection: %v", err)
+			}
 			return
 		}
 		// A command that exits near-instantly (e.g. "true") can create and
@@ -93,7 +102,11 @@ func roundTrip(t *testing.T, socketPath string, req Request) Response {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			t.Errorf("close connection: %v", err)
+		}
+	}()
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		t.Fatalf("encode: %v", err)
 	}
@@ -123,7 +136,9 @@ func TestWaitReturnsNonzeroExitCode(t *testing.T) {
 	if resp.ExitCode == nil || *resp.ExitCode != 3 {
 		t.Fatalf("wait: got %+v", resp)
 	}
-	<-errCh
+	if err := <-errCh; err != nil {
+		t.Fatalf("serve: %v", err)
+	}
 }
 
 func TestInfoReportsRunningThenKilled(t *testing.T) {
@@ -274,7 +289,9 @@ func TestUnknownOp(t *testing.T) {
 		t.Fatalf("expected error for unknown op, got %+v", resp)
 	}
 	roundTrip(t, socketPath, Request{Op: "kill"})
-	<-errCh
+	if err := <-errCh; err != nil {
+		t.Fatalf("serve: %v", err)
+	}
 }
 
 // TestAttachSnapshotStreamCoversEntireOutput is a race torture test for the
@@ -305,7 +322,7 @@ func TestAttachSnapshotStreamCoversEntireOutput(t *testing.T) {
 	// The final sentinel line marks end of output, and the trailing sleep keeps
 	// the session alive so clients drain in full before it is killed (output
 	// dropped during session shutdown is likewise a separate concern).
-	shCmd := fmt.Sprintf(`i=0; while [ $i -lt %d ]; do printf '\033[3%%dmln%%05d\033[0m\n' "$((i%%8))" "$i"; i=$((i+1)); done; printf '%s\n'; sleep 30`, lines, sentinel)
+	shCmd := fmt.Sprintf(`i=0; while [ $i -lt %d ]; do printf '\033[3%%dmln%%05d\033[0m\n' "$((i%%8))" "$i"; i=$((i+1)); if [ "$((i%%100))" -eq 0 ]; then sleep 0.001; fi; done; printf '%s\n'; sleep 30`, lines, sentinel)
 	s, socketPath, _, errCh := startTortureSession(t, "torture", []string{"sh", "-c", shCmd})
 
 	type capture struct {
@@ -333,8 +350,12 @@ func TestAttachSnapshotStreamCoversEntireOutput(t *testing.T) {
 		t.Fatalf("history op failed: %q", resp.Error)
 	}
 	full := resp.History
-	s.kill()
-	<-errCh
+	if err := s.kill(); err != nil {
+		t.Fatalf("kill session: %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("run session: %v", err)
+	}
 	if !bytes.Contains(full, sentinelBytes) {
 		t.Fatalf("session output (%d bytes) never contained the sentinel", len(full))
 	}
@@ -353,7 +374,11 @@ func startTortureSession(t *testing.T, id string, cmd []string) (s *Session, soc
 	if err != nil {
 		t.Fatalf("mkdtemp: %v", err)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("remove temp directory: %v", err)
+		}
+	})
 	socketPath = filepath.Join(dir, "sock")
 	retentionDir = filepath.Join(dir, "ended")
 	cfg := Config{
@@ -385,7 +410,11 @@ func attachCapture(t *testing.T, socketPath string, sentinel []byte) (snapshot, 
 		t.Errorf("dial: %v", err)
 		return nil, nil
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			t.Errorf("close attach connection: %v", err)
+		}
+	}()
 	br := bufio.NewReader(conn)
 	if err := json.NewEncoder(conn).Encode(Request{Op: "attach"}); err != nil {
 		t.Errorf("attach encode: %v", err)
@@ -441,7 +470,9 @@ func attachCapture(t *testing.T, socketPath string, sentinel []byte) (snapshot, 
 			break
 		}
 	}
-	_ = WriteFrame(conn, FrameDetach, nil)
+	if err := WriteFrame(conn, FrameDetach, nil); err != nil {
+		t.Errorf("detach: %v", err)
+	}
 	return snapshot, stream
 }
 
@@ -528,8 +559,12 @@ func TestSlowClientResyncsInsteadOfDisconnect(t *testing.T) {
 		t.Fatalf("history op failed: %q", resp.Error)
 	}
 	full := resp.History
-	s.kill()
-	<-errCh
+	if err := s.kill(); err != nil {
+		t.Fatalf("kill session: %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("run session: %v", err)
+	}
 
 	if !open {
 		t.Fatalf("slow client was disconnected instead of re-synced")
@@ -579,7 +614,11 @@ func slowAttachCapture(t *testing.T, socketPath string, sentinel []byte) (resync
 		t.Errorf("dial: %v", err)
 		return nil, nil, nil, false, false
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			t.Errorf("close slow attach connection: %v", err)
+		}
+	}()
 	br := bufio.NewReader(conn)
 	if err := json.NewEncoder(conn).Encode(Request{Op: "attach"}); err != nil {
 		t.Errorf("attach encode: %v", err)
@@ -625,7 +664,10 @@ func slowAttachCapture(t *testing.T, socketPath string, sentinel []byte) (resync
 		// arrived after the latest re-sync, the post-re-sync stream covers
 		// everything up to end of output.
 		if i := bytes.Index(postStream, sentinel); i >= 0 && bytes.IndexByte(postStream[i+len(sentinel):], '\n') >= 0 {
-			_ = WriteFrame(conn, FrameDetach, nil)
+			if err := WriteFrame(conn, FrameDetach, nil); err != nil {
+				t.Errorf("detach slow client: %v", err)
+				return resyncSnap, postStream, streamedOut, resynced, false
+			}
 			return resyncSnap, postStream, streamedOut, resynced, true
 		}
 		// Read deliberately slower than the flood so the backlog keeps overflowing.
@@ -649,7 +691,11 @@ func TestSessionEndDeliversOutputThenCloses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			t.Errorf("close session-end connection: %v", err)
+		}
+	}()
 	br := bufio.NewReader(conn)
 	if err := json.NewEncoder(conn).Encode(Request{Op: "attach"}); err != nil {
 		t.Fatalf("attach encode: %v", err)
@@ -706,8 +752,12 @@ func TestSessionEndDeliversOutputThenCloses(t *testing.T) {
 		t.Fatalf("client never received output through the sentinel")
 	}
 
-	s.kill()
-	<-errCh
+	if err := s.kill(); err != nil {
+		t.Fatalf("kill session: %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("run session: %v", err)
+	}
 
 	var r result
 	select {
@@ -738,7 +788,11 @@ func TestAttachIgnoresUnknownClientFrames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			t.Errorf("close attach connection: %v", err)
+		}
+	}()
 	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatalf("set deadline: %v", err)
 	}
@@ -781,5 +835,370 @@ func TestAttachIgnoresUnknownClientFrames(t *testing.T) {
 	}
 
 	roundTrip(t, socketPath, Request{Op: "kill"})
-	<-errCh
+	if err := <-errCh; err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+}
+
+type errorReader struct {
+	err error
+}
+
+func (r errorReader) Read([]byte) (int, error) {
+	return 0, r.err
+}
+
+type errorWriter struct {
+	err error
+}
+
+func (w errorWriter) Write([]byte) (int, error) {
+	return 0, w.err
+}
+
+type shortWriter struct{}
+
+func (shortWriter) Write(p []byte) (int, error) {
+	return len(p) - 1, nil
+}
+
+type errorListener struct {
+	err error
+}
+
+func (l errorListener) Accept() (net.Conn, error) {
+	return nil, l.err
+}
+
+func (l errorListener) Close() error {
+	return nil
+}
+
+func (l errorListener) Addr() net.Addr {
+	return nil
+}
+
+type writeFailConn struct {
+	net.Conn
+	writes int
+	err    error
+}
+
+func (c *writeFailConn) Write(p []byte) (int, error) {
+	c.writes++
+	if c.writes > 1 {
+		return 0, c.err
+	}
+	return c.Conn.Write(p)
+}
+
+type closeFailConn struct {
+	net.Conn
+	err error
+}
+
+func (c *closeFailConn) Close() error {
+	closeErr := c.Conn.Close()
+	return errors.Join(closeErr, c.err)
+}
+
+func TestPumpOutputRecordsUnexpectedReadError(t *testing.T) {
+	readErr := errors.New("read PTY")
+	term, err := vt.New(defaultCols, defaultRows)
+	if err != nil {
+		t.Fatalf("new terminal: %v", err)
+	}
+	defer term.Close()
+	store, err := scrollback.New(scrollback.Config{})
+	if err != nil {
+		t.Fatalf("new scrollback: %v", err)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close scrollback: %v", err)
+		}
+	}()
+	s := &Session{
+		store:     store,
+		term:      term,
+		attachers: make(map[*attacher]struct{}),
+	}
+
+	s.pumpOutputFrom(errorReader{err: readErr})
+
+	s.mu.Lock()
+	err = s.outputErr
+	s.mu.Unlock()
+	if !errors.Is(err, readErr) {
+		t.Fatalf("output error = %v, want %v", err, readErr)
+	}
+}
+
+func TestPumpInputRecordsWriteError(t *testing.T) {
+	writeErr := errors.New("write PTY")
+	s := &Session{inputBuf: []byte("input")}
+	s.cond = sync.NewCond(&s.mu)
+
+	s.pumpInputTo(errorWriter{err: writeErr})
+
+	s.mu.Lock()
+	err := s.inputErr
+	s.mu.Unlock()
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("input error = %v, want %v", err, writeErr)
+	}
+}
+
+func TestPumpInputRecordsShortWrite(t *testing.T) {
+	s := &Session{inputBuf: []byte("input")}
+	s.cond = sync.NewCond(&s.mu)
+
+	s.pumpInputTo(shortWriter{})
+
+	s.mu.Lock()
+	err := s.inputErr
+	s.mu.Unlock()
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("input error = %v, want %v", err, io.ErrShortWrite)
+	}
+}
+
+func TestAcceptLoopRecordsUnexpectedFailure(t *testing.T) {
+	acceptErr := errors.New("accept")
+	s := &Session{
+		listener:   errorListener{err: acceptErr},
+		acceptDone: make(chan struct{}),
+	}
+
+	s.acceptLoop()
+
+	s.mu.Lock()
+	err := s.acceptErr
+	s.mu.Unlock()
+	if !errors.Is(err, acceptErr) {
+		t.Fatalf("accept error = %v, want %v", err, acceptErr)
+	}
+}
+
+func TestWaitConnsReportsUnfinishedHandler(t *testing.T) {
+	var conns sync.WaitGroup
+	conns.Add(1)
+	defer conns.Done()
+
+	err := waitConns(&conns, time.Millisecond)
+	if !errors.Is(err, errConnectionDrainTimeout) {
+		t.Fatalf("waitConns error = %v, want %v", err, errConnectionDrainTimeout)
+	}
+}
+
+func TestRunReportsUnfinishedHandlerAtShutdown(t *testing.T) {
+	dir, err := os.MkdirTemp("", "d")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("remove temp directory: %v", err)
+		}
+	})
+
+	s, err := newSession(Config{
+		ID:           "handler-timeout",
+		Command:      []string{"sh", "-c", "sleep 30"},
+		SocketPath:   filepath.Join(dir, "sock"),
+		RetentionDir: filepath.Join(dir, "ended"),
+	})
+	if err != nil {
+		t.Fatalf("new session: %v", err)
+	}
+	s.connDrainTimeout = 20 * time.Millisecond
+	outputErr := errors.New("output pump")
+	s.outputErr = outputErr
+
+	runErr := make(chan error, 1)
+	ended := make(chan struct{})
+	go func() {
+		runErr <- s.run()
+		close(ended)
+	}()
+	waitForSocket(t, s.cfg.SocketPath, ended)
+
+	client, err := net.Dial("unix", s.cfg.SocketPath)
+	if err != nil {
+		t.Fatalf("dial incomplete request: %v", err)
+	}
+	if _, err := client.Write([]byte(`{"op":"info"`)); err != nil {
+		t.Fatalf("write incomplete request: %v", err)
+	}
+
+	killResp := roundTrip(t, s.cfg.SocketPath, Request{Op: "kill"})
+	if !killResp.OK {
+		t.Fatalf("kill response: %+v", killResp)
+	}
+
+	select {
+	case err := <-runErr:
+		if !errors.Is(err, errConnectionDrainTimeout) {
+			t.Fatalf("run error = %v, want %v", err, errConnectionDrainTimeout)
+		}
+		if !errors.Is(err, outputErr) {
+			t.Fatalf("run error = %v, want runtime error %v", err, outputErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("run did not return after connection drain timeout")
+	}
+
+	if err := client.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("close incomplete request: %v", err)
+	}
+	handlersDone := make(chan struct{})
+	go func() {
+		s.conns.Wait()
+		close(handlersDone)
+	}()
+	select {
+	case <-handlersDone:
+	case <-time.After(time.Second):
+		t.Fatal("incomplete request handler did not exit after client close")
+	}
+}
+
+func TestServeConnRecordsResponseWriteFailure(t *testing.T) {
+	client, server := net.Pipe()
+	s := &Session{}
+	s.conns.Add(1)
+	done := make(chan struct{})
+	go func() {
+		s.serveConn(server)
+		close(done)
+	}()
+
+	if err := json.NewEncoder(client).Encode(Request{Op: "bogus"}); err != nil {
+		t.Fatalf("encode request: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("close client: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("serveConn did not finish")
+	}
+
+	s.mu.Lock()
+	err := s.handlerErr
+	s.mu.Unlock()
+	if err == nil {
+		t.Fatal("handler response write failure was not recorded")
+	}
+}
+
+func TestRecordHandlerErrorPreservesSiblingOfClosedError(t *testing.T) {
+	writeErr := errors.New("write response")
+	s := &Session{}
+
+	s.recordHandlerError(errors.Join(net.ErrClosed, writeErr))
+
+	s.mu.Lock()
+	err := s.handlerErr
+	s.mu.Unlock()
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("handler error = %v, want sibling %v", err, writeErr)
+	}
+	if errors.Is(err, net.ErrClosed) {
+		t.Fatalf("handler error retained expected close branch: %v", err)
+	}
+}
+
+func TestAttachWriterFailureUnblocksServeAttach(t *testing.T) {
+	writeErr := errors.New("write frame")
+	client, server := net.Pipe()
+	conn := &writeFailConn{Conn: server, err: writeErr}
+
+	term, err := vt.New(defaultCols, defaultRows)
+	if err != nil {
+		t.Fatalf("new terminal: %v", err)
+	}
+	defer term.Close()
+	s := &Session{
+		term:      term,
+		attachers: make(map[*attacher]struct{}),
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- s.serveAttach(conn, server)
+	}()
+
+	var resp Response
+	if err := json.NewDecoder(client).Decode(&resp); err != nil {
+		t.Fatalf("decode handshake: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("attach response: %+v", resp)
+	}
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, writeErr) {
+			t.Fatalf("serveAttach error = %v, want %v", err, writeErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("serveAttach remained blocked after writer failure")
+	}
+
+	if err := client.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("close client: %v", err)
+	}
+}
+
+func TestSocketAlivePropagatesUnexpectedDialFailure(t *testing.T) {
+	dialErr := errors.New("dial permission denied")
+	dial := func(string, string, time.Duration) (net.Conn, error) {
+		return nil, dialErr
+	}
+
+	alive, err := socketAliveWithDial("ignored", dial)
+	if alive {
+		t.Fatal("failed socket dial reported live")
+	}
+	if !errors.Is(err, dialErr) {
+		t.Fatalf("socket dial error = %v, want %v", err, dialErr)
+	}
+}
+
+func TestSocketAliveTreatsRefusedSocketAsStale(t *testing.T) {
+	dial := func(string, string, time.Duration) (net.Conn, error) {
+		return nil, syscall.ECONNREFUSED
+	}
+
+	alive, err := socketAliveWithDial("ignored", dial)
+	if alive {
+		t.Fatal("refused socket reported live")
+	}
+	if err != nil {
+		t.Fatalf("refused socket error = %v, want nil", err)
+	}
+}
+
+func TestSocketAliveRetainsLivenessWhenCloseFails(t *testing.T) {
+	closeErr := errors.New("close probe")
+	client, server := net.Pipe()
+	defer func() {
+		if err := server.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			t.Errorf("close server: %v", err)
+		}
+	}()
+
+	dial := func(string, string, time.Duration) (net.Conn, error) {
+		return &closeFailConn{Conn: client, err: closeErr}, nil
+	}
+	alive, err := socketAliveWithDial("ignored", dial)
+	if !alive {
+		t.Fatal("successful socket dial reported dead after close failure")
+	}
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("socket cleanup error = %v, want %v", err, closeErr)
+	}
 }

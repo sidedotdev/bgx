@@ -2,10 +2,13 @@ package bgx
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"sync/atomic"
+	"syscall"
 )
 
 // Dial opens one connection to a local session's socket. Each connection
@@ -23,7 +26,14 @@ func dialSession(ctx context.Context, id string) (*net.UnixConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return conn.(*net.UnixConn), nil
+	unixConn, ok := conn.(*net.UnixConn)
+	if !ok {
+		return nil, errors.Join(
+			fmt.Errorf("dial unix socket returned %T", conn),
+			conn.Close(),
+		)
+	}
+	return unixConn, nil
 }
 
 // Bridge pipes rw to and from one connection to a local session's socket,
@@ -34,17 +44,31 @@ func dialSession(ctx context.Context, id string) (*net.UnixConn, error) {
 // the connection, rw fails, or ctx is canceled; when rw reaches EOF first, the
 // connection's write side is half-closed so the session observes the EOF while
 // its remaining output still drains to rw.
-func Bridge(ctx context.Context, id string, rw io.ReadWriteCloser) error {
+func Bridge(ctx context.Context, id string, rw io.ReadWriteCloser) (retErr error) {
 	conn, err := dialSession(ctx, id)
 	if err != nil {
-		_ = rw.Close()
-		return fmt.Errorf("bridge: dial: %w", err)
+		return errors.Join(
+			fmt.Errorf("bridge: dial: %w", err),
+			wrapBridgeError("close caller stream", rw.Close()),
+		)
 	}
-	defer conn.Close()
 
-	stopCancellation := context.AfterFunc(ctx, func() {
-		_ = conn.Close()
-	})
+	var closeOnce sync.Once
+	var connCloseErr error
+	closeConnNow := func() {
+		closeOnce.Do(func() {
+			connCloseErr = conn.Close()
+		})
+	}
+	closeConn := func() error {
+		closeConnNow()
+		return connCloseErr
+	}
+	defer func() {
+		retErr = errors.Join(retErr, wrapBridgeError("close session connection", closeConn()))
+	}()
+
+	stopCancellation := context.AfterFunc(ctx, closeConnNow)
 	defer stopCancellation()
 
 	// shuttingDown marks errors induced by Bridge's own teardown (closing rw to
@@ -55,38 +79,52 @@ func Bridge(ctx context.Context, id string, rw io.ReadWriteCloser) error {
 	var shuttingDown atomic.Bool
 	inboundDone := make(chan error, 1)
 	go func() {
-		_, err := io.Copy(conn, rw)
+		_, copyErr := io.Copy(conn, rw)
 		if shuttingDown.Load() {
-			err = nil
+			copyErr = nil
 		}
-		if err != nil {
+		var shutdownErr error
+		if copyErr != nil {
 			// A broken caller stream can no longer drive the session; close the
 			// connection outright so the outbound copy unblocks even while the
 			// session stays open.
-			_ = conn.Close()
+			shutdownErr = wrapBridgeError("close session connection", closeConn())
 		} else {
 			// Half-close so the session observes the caller's EOF while its
 			// remaining output still drains below.
-			_ = conn.CloseWrite()
+			shutdownErr = wrapBridgeCloseWriteError(conn.CloseWrite())
 		}
-		inboundDone <- err
+		inboundDone <- errors.Join(copyErr, shutdownErr)
 	}()
 
 	_, outErr := io.Copy(rw, conn)
 	shuttingDown.Store(true)
-	_ = rw.Close()
+	rwCloseErr := wrapBridgeError("close caller stream", rw.Close())
 	inErr := <-inboundDone
 
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return ctxErr
+		return errors.Join(ctxErr, rwCloseErr, inErr)
 	}
 	// A genuine inbound error closed the connection itself, making any outbound
 	// error a teardown artifact, so the inbound error takes precedence.
 	if inErr != nil {
-		return fmt.Errorf("bridge: %w", inErr)
+		return errors.Join(fmt.Errorf("bridge: %w", inErr), rwCloseErr)
 	}
 	if outErr != nil {
-		return fmt.Errorf("bridge: %w", outErr)
+		return errors.Join(fmt.Errorf("bridge: %w", outErr), rwCloseErr)
 	}
-	return nil
+	return rwCloseErr
+}
+func wrapBridgeError(operation string, err error) error {
+	if err == nil || errors.Is(err, net.ErrClosed) {
+		return nil
+	}
+	return fmt.Errorf("bridge: %s: %w", operation, err)
+}
+
+func wrapBridgeCloseWriteError(err error) error {
+	if errors.Is(err, syscall.ENOTCONN) {
+		return nil
+	}
+	return wrapBridgeError("close session write side", err)
 }

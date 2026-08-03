@@ -25,9 +25,26 @@ intent_links:
       - client_attach.go:AttachOption
       - client_attach.go:WithDetachInstructions
       - client_attach.go:Client.Attach
+      - client_attach.go:withoutExpectedAttachShutdownErrors
       - client_attach_test.go
+      - attachview_test.go:TestAttachViewCloseRetainsAsynchronousPaintError
+      - terminal.go:ErrTerminalSizeUnavailable
       - terminal.go:Terminal
       - terminal.go:ProcessTerminal
+      - terminal.go:ProcessTerminal.Size
+      - terminal_size_unix.go:normalizeTerminalSizeError
+      - terminal_size_windows.go:normalizeTerminalSizeError
+      - terminal.go:ProcessTerminal.Size
+      - terminal_size_unix.go:normalizeTerminalSizeError
+      - terminal_size_unix_test.go:TestNormalizeTerminalSizeError
+      - terminal_size_windows.go:normalizeTerminalSizeError
+      - terminal_size_windows_test.go:TestNormalizeTerminalSizeError
+      - terminal_read_unix.go:ProcessTerminal.ReadContext
+      - terminal_read_windows.go:ProcessTerminal.ReadContext
+      - terminal_resize_unix.go:ProcessTerminal.ResizeEvents
+      - terminal_resize_windows.go:ProcessTerminal.ResizeEvents
+      - terminal_read_windows_test.go:TestProcessTerminalReadContextCancellationWithBlockedInput
+      - terminal_read_windows_test.go:TestClientAttachSessionEndCancelsBlockedProcessTerminalInput
       - terminal.go:NewProcessTerminal
       - client.go:sessionClient
       - client_api_test.go

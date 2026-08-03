@@ -2,6 +2,7 @@ package scrollback
 
 import (
 	"bytes"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -55,9 +56,16 @@ func pattern(n int) []byte {
 	return b
 }
 
+func closeStore(t *testing.T, s *Store) {
+	t.Helper()
+	if err := s.Close(); err != nil {
+		t.Errorf("close store: %v", err)
+	}
+}
+
 func TestSmallStreamPassesThrough(t *testing.T) {
 	s := NewStore(0, 0)
-	defer s.Close()
+	t.Cleanup(func() { closeStore(t, s) })
 
 	data := []byte("hello, scrollback world")
 	if _, err := s.Write(data); err != nil {
@@ -81,7 +89,7 @@ func TestLargeStreamKeepsHeadAndTailDiscardsMiddle(t *testing.T) {
 		total = 20000
 	)
 	s := newStore(head, tail, chunk, 1<<20)
-	defer s.Close()
+	t.Cleanup(func() { closeStore(t, s) })
 
 	data := pattern(total)
 	if _, err := s.Write(data); err != nil {
@@ -145,7 +153,7 @@ func TestTailNotChunkAligned(t *testing.T) {
 		total = 20000
 	)
 	s := newStore(head, tail, chunk, 1<<20)
-	defer s.Close()
+	t.Cleanup(func() { closeStore(t, s) })
 
 	data := pattern(total)
 	if _, err := s.Write(data); err != nil {
@@ -214,7 +222,7 @@ func TestSnapshotDemarcatesDiscardedMiddle(t *testing.T) {
 		total = 40000
 	)
 	s := newStore(head, tail, chunk, 1<<20)
-	defer s.Close()
+	t.Cleanup(func() { closeStore(t, s) })
 	if _, err := s.Write(pattern(total)); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -254,7 +262,7 @@ func TestSnapshotDemarcatesDiscardedMiddle(t *testing.T) {
 
 func TestSnapshotNoDemarcationWhenNothingDiscarded(t *testing.T) {
 	s := newStore(1<<20, 1<<20, 1000, 1<<20)
-	defer s.Close()
+	t.Cleanup(func() { closeStore(t, s) })
 
 	data := pattern(50000)
 	if _, err := s.Write(data); err != nil {
@@ -271,7 +279,7 @@ func TestSnapshotNoDemarcationWhenNothingDiscarded(t *testing.T) {
 
 func TestTotalBytesAccounting(t *testing.T) {
 	s := newStore(1000, 2000, 1000, 1<<20)
-	defer s.Close()
+	t.Cleanup(func() { closeStore(t, s) })
 
 	var written int
 	for i := 0; i < 50; i++ {
@@ -297,7 +305,7 @@ func TestFallbackStoresUncompressedChunks(t *testing.T) {
 		total    = 30000
 	)
 	s := newStore(head, tail, chunk, fallback)
-	defer s.Close()
+	t.Cleanup(func() { closeStore(t, s) })
 
 	data := pattern(total)
 	if _, err := s.Write(data); err != nil {
@@ -337,7 +345,7 @@ func TestBoundariesNeverSplitRunesOrEscapes(t *testing.T) {
 		chunk = 1000
 	)
 	s := newStore(head, tail, chunk, 1<<20)
-	defer s.Close()
+	t.Cleanup(func() { closeStore(t, s) })
 
 	// Interleave terminated escape sequences (CSI, OSC) with 2-, 3- and 4-byte
 	// UTF-8 runes so that naive byte-count cuts would routinely split a rune or
@@ -411,7 +419,7 @@ func TestConcurrentWritesDuringFlushArePreserved(t *testing.T) {
 	// written byte; a slow backend forces writes to land while a flush holds no
 	// lock, which previously dropped bytes appended during that window.
 	s := newStoreBackend(head, 1<<30, chunk, 1<<30, slowBackend{delay: 50 * time.Microsecond})
-	defer s.Close()
+	t.Cleanup(func() { closeStore(t, s) })
 
 	var wg sync.WaitGroup
 	for w := 0; w < writers; w++ {
@@ -459,7 +467,7 @@ func TestPartialMultibyteWritePreservedAcrossWrites(t *testing.T) {
 	emoji := []byte("\U0001F600") // 4 bytes
 	cjk := []byte("世")            // 3 bytes
 	s := newStore(8, 1<<30, 4, 1<<20)
-	defer s.Close()
+	t.Cleanup(func() { closeStore(t, s) })
 
 	writes := [][]byte{
 		[]byte("abc"),
@@ -504,7 +512,7 @@ func TestStatefulEscapeSequenceSpansChunksAndEvictions(t *testing.T) {
 		chunk = 1000
 	)
 	s := newStore(head, tail, chunk, 1<<20)
-	defer s.Close()
+	t.Cleanup(func() { closeStore(t, s) })
 
 	// A long OSC payload has no interior ground boundary, so it can only be cut
 	// once terminated: it must never be flushed split across chunks even though
@@ -575,7 +583,7 @@ func TestApproximateSizesStayWithinOneBoundaryGap(t *testing.T) {
 		data = append(data, line...)
 	}
 	s := newStore(head, tail, chunk, 1<<20)
-	defer s.Close()
+	t.Cleanup(func() { closeStore(t, s) })
 	if _, err := s.Write(data); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -608,5 +616,29 @@ func TestApproximateSizesStayWithinOneBoundaryGap(t *testing.T) {
 	}
 	if !atGround(got[:headLen]) || !atGround(data[:len(data)-len(tailGot)]) {
 		t.Fatal("head/tail boundaries are not ground/rune aligned")
+	}
+}
+
+type closeErrorBackend struct {
+	memoryBackend
+	err error
+}
+
+func (b closeErrorBackend) close() error {
+	return b.err
+}
+
+func TestCloseReturnsBackendErrorIdempotently(t *testing.T) {
+	closeErr := errors.New("close backend")
+	s := newStoreBackend(100, 1000, 200, 1<<20, closeErrorBackend{err: closeErr})
+
+	if err := s.Close(); !errors.Is(err, closeErr) {
+		t.Fatalf("close error = %v, want %v", err, closeErr)
+	}
+	if err := s.Close(); !errors.Is(err, closeErr) {
+		t.Fatalf("second close error = %v, want %v", err, closeErr)
+	}
+	if err := s.Err(); !errors.Is(err, closeErr) {
+		t.Fatalf("store error = %v, want %v", err, closeErr)
 	}
 }

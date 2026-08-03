@@ -8,6 +8,7 @@
 package scrollback
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"unicode/utf8"
@@ -67,6 +68,7 @@ type Store struct {
 	closed     bool
 	busy       bool
 	err        error
+	closeErr   error
 }
 
 // NewStore returns a Store retaining headSize leading bytes and tailSize
@@ -96,8 +98,17 @@ func newStoreBackend(headSize, tailSize, chunkSize, fallbackBytes int, b backend
 		fallbackBytes = defaultFallbackBytes
 	}
 
-	enc, _ := zstd.NewWriter(nil)
-	dec, _ := zstd.NewReader(nil)
+	enc, err := zstd.NewWriter(nil)
+	if err != nil {
+		panic(fmt.Sprintf("initialize zstd encoder without options: %v", err))
+	}
+	dec, err := zstd.NewReader(nil)
+	if err != nil {
+		if closeErr := enc.Close(); closeErr != nil {
+			panic(fmt.Sprintf("initialize zstd decoder: %v; close encoder: %v", err, closeErr))
+		}
+		panic(fmt.Sprintf("initialize zstd decoder without options: %v", err))
+	}
 
 	s := &Store{
 		headSize:      headSize,
@@ -189,18 +200,25 @@ func (s *Store) Snapshot() []byte {
 func (s *Store) Close() error {
 	s.mu.Lock()
 	if s.closed {
+		err := s.closeErr
 		s.mu.Unlock()
-		return nil
+		return err
 	}
 	s.closed = true
 	s.cond.Broadcast()
 	s.mu.Unlock()
 
 	<-s.done
-	s.encoder.Close()
+	encoderErr := s.encoder.Close()
 	s.decoder.Close()
-	s.backend.close()
-	return nil
+	backendErr := s.backend.close()
+
+	s.mu.Lock()
+	s.err = errors.Join(s.err, encoderErr, backendErr)
+	s.closeErr = s.err
+	err := s.closeErr
+	s.mu.Unlock()
+	return err
 }
 
 // drain is the background goroutine that moves pending bytes into the
@@ -316,7 +334,7 @@ func (s *Store) flushChunk(cut, backlog int) {
 	}
 	s.chunkBuf = rest
 	if err != nil {
-		s.err = err
+		s.err = errors.Join(s.err, err)
 		return
 	}
 	c := chunk{handle: h, rawLen: cut, compressed: compressed}
@@ -336,7 +354,7 @@ func (s *Store) evict() {
 	for len(s.tailChunks) > 1 && s.tailBytes-s.tailChunks[0].rawLen >= s.tailSize {
 		s.tailBytes -= s.tailChunks[0].rawLen
 		if err := s.backend.drop(s.tailChunks[0].handle); err != nil {
-			s.err = err
+			s.err = errors.Join(s.err, err)
 		}
 		s.tailChunks = s.tailChunks[1:]
 	}
@@ -349,13 +367,16 @@ func (s *Store) decodeChunks(chunks []chunk) []byte {
 	for _, c := range chunks {
 		data, err := s.backend.get(c.handle)
 		if err != nil {
-			s.err = err
+			s.err = errors.Join(s.err, err)
 			continue
 		}
 		if c.compressed {
-			if d, derr := s.decoder.DecodeAll(data, nil); derr == nil {
-				out = append(out, d...)
+			d, err := s.decoder.DecodeAll(data, nil)
+			if err != nil {
+				s.err = errors.Join(s.err, err)
+				continue
 			}
+			out = append(out, d...)
 		} else {
 			out = append(out, data...)
 		}

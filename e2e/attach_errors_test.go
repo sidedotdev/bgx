@@ -8,6 +8,8 @@ package e2e
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -30,7 +32,11 @@ func fakeSessionSocket(t *testing.T, dir, id string) (net.Listener, string) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() {
+		if err := ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			t.Errorf("close fake session listener: %v", err)
+		}
+	})
 	return ln, sockPath
 }
 
@@ -54,31 +60,46 @@ func TestAttachDialFailureAfterLivenessCheckReportsNotFound(t *testing.T) {
 	const id = "phantom"
 	ln, sockPath := fakeSessionSocket(t, dir, id)
 
-	served := make(chan struct{})
+	served := make(chan error, 1)
 	go func() {
-		defer close(served)
 		conn, err := ln.Accept()
 		if err != nil {
+			served <- fmt.Errorf("accept info request: %w", err)
 			return
 		}
-		defer conn.Close()
+
+		var serveErr error
+		defer func() {
+			served <- errors.Join(serveErr, conn.Close())
+		}()
+
 		req, ok := readRequest(t, bufio.NewReader(conn))
 		if !ok || req.Op != "info" {
-			t.Errorf("first request = %+v, want info", req)
+			serveErr = fmt.Errorf("first request = %+v, want info", req)
 			return
 		}
 		// Unlink the socket before answering so the attach dial that follows
 		// the liveness check deterministically fails.
-		ln.Close()
-		os.Remove(sockPath)
-		_ = json.NewEncoder(conn).Encode(daemon.Response{
+		if err := ln.Close(); err != nil {
+			serveErr = fmt.Errorf("close listener before response: %w", err)
+			return
+		}
+		if err := os.Remove(sockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			serveErr = fmt.Errorf("remove socket before response: %w", err)
+			return
+		}
+		if err := json.NewEncoder(conn).Encode(daemon.Response{
 			OK:   true,
 			Info: &daemon.Info{ID: id, Running: true},
-		})
+		}); err != nil {
+			serveErr = fmt.Errorf("encode info response: %w", err)
+		}
 	}()
 
 	res := bgxIn(t, dir, "attach", id)
-	<-served
+	if err := <-served; err != nil {
+		t.Fatalf("serve fake session: %v", err)
+	}
 	if res.exitCode == 0 {
 		t.Fatalf("attach succeeded despite dial failure; stdout=%q", res.stdout)
 	}
@@ -89,7 +110,11 @@ func TestAttachDialFailureAfterLivenessCheckReportsNotFound(t *testing.T) {
 	if errObj["code"] != "session_not_found" {
 		t.Fatalf("code = %v, want session_not_found; stderr=%q", errObj["code"], res.stderr)
 	}
-	if msg, _ := errObj["error"].(string); !strings.Contains(msg, "does not exist") {
+	msg, ok := errObj["error"].(string)
+	if !ok {
+		t.Fatalf("error = %T, want string; stderr=%q", errObj["error"], res.stderr)
+	}
+	if !strings.Contains(msg, "does not exist") {
 		t.Fatalf("error = %q, want mention of not existing", msg)
 	}
 }
@@ -99,37 +124,53 @@ func TestAttachNegativeHandshakeReportsAttachFailed(t *testing.T) {
 	const id = "closing"
 	ln, _ := fakeSessionSocket(t, dir, id)
 
+	served := make(chan error, 2)
 	go func() {
-		for {
+		for i := 0; i < 2; i++ {
 			conn, err := ln.Accept()
 			if err != nil {
-				return
+				served <- fmt.Errorf("accept request: %w", err)
+				continue
 			}
 			go func(conn net.Conn) {
-				defer conn.Close()
+				var serveErr error
+				defer func() {
+					served <- errors.Join(serveErr, conn.Close())
+				}()
+
 				req, ok := readRequest(t, bufio.NewReader(conn))
 				if !ok {
+					serveErr = errors.New("read request")
 					return
 				}
 				switch req.Op {
 				case "info":
-					_ = json.NewEncoder(conn).Encode(daemon.Response{
+					if err := json.NewEncoder(conn).Encode(daemon.Response{
 						OK:   true,
 						Info: &daemon.Info{ID: id, Running: true},
-					})
+					}); err != nil {
+						serveErr = fmt.Errorf("encode info response: %w", err)
+					}
 				case "attach":
-					_ = json.NewEncoder(conn).Encode(daemon.Response{
+					if err := json.NewEncoder(conn).Encode(daemon.Response{
 						OK:    false,
 						Error: "session has ended",
-					})
+					}); err != nil {
+						serveErr = fmt.Errorf("encode attach response: %w", err)
+					}
 				default:
-					t.Errorf("unexpected request op %q", req.Op)
+					serveErr = fmt.Errorf("unexpected request op %q", req.Op)
 				}
 			}(conn)
 		}
 	}()
 
 	res := bgxIn(t, dir, "attach", id)
+	for i := 0; i < 2; i++ {
+		if err := <-served; err != nil {
+			t.Fatalf("serve fake session: %v", err)
+		}
+	}
 	if res.exitCode == 0 {
 		t.Fatalf("attach succeeded despite refused handshake; stdout=%q", res.stdout)
 	}
@@ -140,7 +181,11 @@ func TestAttachNegativeHandshakeReportsAttachFailed(t *testing.T) {
 	if errObj["code"] != "attach_failed" {
 		t.Fatalf("code = %v, want attach_failed; stderr=%q", errObj["code"], res.stderr)
 	}
-	if msg, _ := errObj["error"].(string); !strings.Contains(msg, "session has ended") {
+	msg, ok := errObj["error"].(string)
+	if !ok {
+		t.Fatalf("error = %T, want string; stderr=%q", errObj["error"], res.stderr)
+	}
+	if !strings.Contains(msg, "session has ended") {
 		t.Fatalf("error = %q, want the daemon's handshake message", msg)
 	}
 }

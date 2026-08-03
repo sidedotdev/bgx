@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -46,8 +47,17 @@ func TestBridgeForwardsAttachProtocolVerbatim(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start bridge: %v", err)
 	}
-	watchdog := time.AfterFunc(30*time.Second, func() { _ = cmd.Process.Kill() })
-	defer watchdog.Stop()
+	watchdogErr := make(chan error, 1)
+	watchdog := time.AfterFunc(30*time.Second, func() {
+		watchdogErr <- cmd.Process.Kill()
+	})
+	defer func() {
+		if !watchdog.Stop() {
+			if err := <-watchdogErr; err != nil && !errors.Is(err, os.ErrProcessDone) {
+				t.Errorf("kill timed-out bridge: %v", err)
+			}
+		}
+	}()
 
 	if _, err := stdin.Write([]byte("{\"op\":\"attach\"}\n")); err != nil {
 		t.Fatalf("write handshake: %v", err)
@@ -82,7 +92,9 @@ func TestBridgeForwardsAttachProtocolVerbatim(t *testing.T) {
 	if err := daemon.WriteFrame(stdin, daemon.FrameDetach, nil); err != nil {
 		t.Fatalf("write detach frame: %v", err)
 	}
-	stdin.Close()
+	if err := stdin.Close(); err != nil {
+		t.Fatalf("close bridge stdin: %v", err)
+	}
 	if _, err := io.Copy(io.Discard, br); err != nil {
 		t.Fatalf("drain bridge stdout: %v", err)
 	}
@@ -151,11 +163,12 @@ func driveInteractiveAttach(t *testing.T, cmd *exec.Cmd, marker, input, want str
 	if err != nil {
 		t.Fatalf("pty start: %v", err)
 	}
-	defer ptmx.Close()
+	defer closePTY(t, ptmx)
 
 	var mu sync.Mutex
 	var got []byte
 	readDone := make(chan struct{})
+	readErr := make(chan error, 1)
 	go func() {
 		defer close(readDone)
 		buf := make([]byte, 4096)
@@ -167,6 +180,9 @@ func driveInteractiveAttach(t *testing.T, cmd *exec.Cmd, marker, input, want str
 				mu.Unlock()
 			}
 			if err != nil {
+				if !expectedPTYReadError(err) {
+					readErr <- err
+				}
 				return
 			}
 		}
@@ -204,10 +220,21 @@ func driveInteractiveAttach(t *testing.T, cmd *exec.Cmd, marker, input, want str
 			t.Fatalf("attach exit: %v; output=%q", err, output())
 		}
 	case <-time.After(15 * time.Second):
-		_ = cmd.Process.Kill()
-		t.Fatalf("attach did not exit after detach; output=%q", output())
+		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Fatalf("kill attach after timeout: %v; output=%q", err, output())
+		}
+		if err := <-waitErr; err == nil {
+			t.Fatalf("attach did not exit after detach; output=%q", output())
+		} else {
+			t.Fatalf("attach did not exit after detach: %v; output=%q", err, output())
+		}
 	}
 	<-readDone
+	select {
+	case err := <-readErr:
+		t.Fatalf("read attach pty: %v", err)
+	default:
+	}
 }
 
 // expectRunning asserts the session is still running after a remote detach.
@@ -297,7 +324,11 @@ func assertSingleJSONError(t *testing.T, res result, wantCode, wantMsg string) {
 	if errObj["code"] != wantCode {
 		t.Fatalf("code = %v, want %s; stderr=%q", errObj["code"], wantCode, res.stderr)
 	}
-	if msg, _ := errObj["error"].(string); !strings.Contains(msg, wantMsg) {
+	msg, ok := errObj["error"].(string)
+	if !ok {
+		t.Fatalf("error = %T, want string; stderr=%q", errObj["error"], res.stderr)
+	}
+	if !strings.Contains(msg, wantMsg) {
 		t.Fatalf("error = %q, want mention of %q", msg, wantMsg)
 	}
 }
@@ -331,7 +362,10 @@ func TestAttachRejectsBothSSHAndVia(t *testing.T) {
 	if errObj["code"] != "invalid_argument" {
 		t.Fatalf("code = %v, want invalid_argument; stderr=%q", errObj["code"], res.stderr)
 	}
-	msg, _ := errObj["error"].(string)
+	msg, ok := errObj["error"].(string)
+	if !ok {
+		t.Fatalf("error = %T, want string; stderr=%q", errObj["error"], res.stderr)
+	}
 	if !strings.Contains(msg, "--ssh") || !strings.Contains(msg, "--via") {
 		t.Fatalf("error = %q, want mention of both --ssh and --via", msg)
 	}

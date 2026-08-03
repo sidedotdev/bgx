@@ -1,16 +1,32 @@
 package e2e
 
 import (
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/creack/pty"
 	lg "go.mitchellh.com/libghostty"
 )
+
+func closePTY(t *testing.T, ptmx *os.File) {
+	t.Helper()
+	if err := ptmx.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+		t.Errorf("close pty: %v", err)
+	}
+}
+
+func expectedPTYReadError(err error) bool {
+	return errors.Is(err, io.EOF) ||
+		errors.Is(err, os.ErrClosed) ||
+		errors.Is(err, syscall.EIO)
+}
 
 // renderScreen replays a captured attach output stream through an emulated
 // terminal of the given size and returns its visible rows as plain text, so
@@ -90,11 +106,12 @@ func TestAttachStreamsAndDetaches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pty start: %v", err)
 	}
-	defer ptmx.Close()
+	defer closePTY(t, ptmx)
 
 	var mu sync.Mutex
 	var got []byte
 	readDone := make(chan struct{})
+	readErr := make(chan error, 1)
 	go func() {
 		defer close(readDone)
 		buf := make([]byte, 64<<10)
@@ -106,6 +123,9 @@ func TestAttachStreamsAndDetaches(t *testing.T) {
 				mu.Unlock()
 			}
 			if rerr != nil {
+				if !expectedPTYReadError(rerr) {
+					readErr <- rerr
+				}
 				return
 			}
 		}
@@ -147,6 +167,11 @@ func TestAttachStreamsAndDetaches(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("attach client did not detach on ctrl+backslash")
 	}
+	select {
+	case err := <-readErr:
+		t.Fatalf("read attach pty: %v", err)
+	default:
+	}
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("attach client wait: %v", err)
 	}
@@ -182,11 +207,12 @@ func TestAttachResizePropagates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pty start: %v", err)
 	}
-	defer ptmx.Close()
+	defer closePTY(t, ptmx)
 
 	var mu sync.Mutex
 	var got []byte
 	readDone := make(chan struct{})
+	readErr := make(chan error, 1)
 	go func() {
 		defer close(readDone)
 		buf := make([]byte, 64<<10)
@@ -198,6 +224,9 @@ func TestAttachResizePropagates(t *testing.T) {
 				mu.Unlock()
 			}
 			if rerr != nil {
+				if !expectedPTYReadError(rerr) {
+					readErr <- rerr
+				}
 				return
 			}
 		}
@@ -246,7 +275,14 @@ func TestAttachResizePropagates(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("attach client did not detach on ctrl+backslash")
 	}
-	_ = cmd.Wait()
+	select {
+	case err := <-readErr:
+		t.Fatalf("read attach pty: %v", err)
+	default:
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("attach client wait: %v", err)
+	}
 
 	bgxIn(t, dir, "kill", "rsz")
 }
@@ -269,14 +305,18 @@ func TestAttachDetachesOnSplitCtrlBackslash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pty start: %v", err)
 	}
-	defer ptmx.Close()
+	defer closePTY(t, ptmx)
 
 	readDone := make(chan struct{})
+	readErr := make(chan error, 1)
 	go func() {
 		defer close(readDone)
 		buf := make([]byte, 64<<10)
 		for {
 			if _, rerr := ptmx.Read(buf); rerr != nil {
+				if !expectedPTYReadError(rerr) {
+					readErr <- rerr
+				}
 				return
 			}
 		}
@@ -298,6 +338,11 @@ func TestAttachDetachesOnSplitCtrlBackslash(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("attach client did not detach on split ctrl+backslash")
 	}
+	select {
+	case err := <-readErr:
+		t.Fatalf("read attach pty: %v", err)
+	default:
+	}
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("attach client wait: %v", err)
 	}
@@ -318,6 +363,7 @@ type attachE2EClient struct {
 	mu       sync.Mutex
 	got      []byte
 	readDone chan struct{}
+	readErr  chan error
 }
 
 func (c *attachE2EClient) output() string {
@@ -345,7 +391,12 @@ func startAttachE2EClient(t *testing.T, dir, id string, ws *pty.Winsize, extraAr
 	if err != nil {
 		t.Fatalf("pty start: %v", err)
 	}
-	c := &attachE2EClient{cmd: cmd, ptmx: ptmx, readDone: make(chan struct{})}
+	c := &attachE2EClient{
+		cmd:      cmd,
+		ptmx:     ptmx,
+		readDone: make(chan struct{}),
+		readErr:  make(chan error, 1),
+	}
 	go func() {
 		defer close(c.readDone)
 		buf := make([]byte, 64<<10)
@@ -357,6 +408,9 @@ func startAttachE2EClient(t *testing.T, dir, id string, ws *pty.Winsize, extraAr
 				c.mu.Unlock()
 			}
 			if rerr != nil {
+				if !expectedPTYReadError(rerr) {
+					c.readErr <- rerr
+				}
 				return
 			}
 		}
@@ -388,7 +442,14 @@ func (c *attachE2EClient) detach(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("attach client did not detach on ctrl+backslash")
 	}
-	_ = c.cmd.Wait()
+	select {
+	case err := <-c.readErr:
+		t.Fatalf("read attach pty: %v", err)
+	default:
+	}
+	if err := c.cmd.Wait(); err != nil {
+		t.Fatalf("attach client wait: %v", err)
+	}
 }
 
 // TestAttachMultiClientInputReachesSession verifies that input from every
@@ -402,9 +463,9 @@ func TestAttachMultiClientInputReachesSession(t *testing.T) {
 	}
 
 	a := startAttachE2EClient(t, dir, "multi", nil)
-	defer a.ptmx.Close()
+	defer closePTY(t, a.ptmx)
 	b := startAttachE2EClient(t, dir, "multi", nil)
-	defer b.ptmx.Close()
+	defer closePTY(t, b.ptmx)
 
 	waitBoth := func(want string) {
 		t.Helper()
@@ -455,9 +516,9 @@ func TestAttachMultiClientMinSize(t *testing.T) {
 	// Min cols (100) comes from A; min rows (40) comes from B, so the applied
 	// size combines minima from different clients.
 	a := startAttachE2EClient(t, dir, "minrsz", &pty.Winsize{Rows: 50, Cols: 100})
-	defer a.ptmx.Close()
+	defer closePTY(t, a.ptmx)
 	b := startAttachE2EClient(t, dir, "minrsz", &pty.Winsize{Rows: 40, Cols: 120})
-	defer b.ptmx.Close()
+	defer closePTY(t, b.ptmx)
 
 	// Let both size reports land before probing the applied PTY size.
 	time.Sleep(500 * time.Millisecond)
@@ -500,11 +561,12 @@ func TestAttachClosesOnSessionEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pty start: %v", err)
 	}
-	defer ptmx.Close()
+	defer closePTY(t, ptmx)
 
 	var mu sync.Mutex
 	var got []byte
 	readDone := make(chan struct{})
+	readErr := make(chan error, 1)
 	go func() {
 		defer close(readDone)
 		buf := make([]byte, 64<<10)
@@ -516,6 +578,9 @@ func TestAttachClosesOnSessionEnd(t *testing.T) {
 				mu.Unlock()
 			}
 			if rerr != nil {
+				if !expectedPTYReadError(rerr) {
+					readErr <- rerr
+				}
 				return
 			}
 		}
@@ -550,6 +615,11 @@ func TestAttachClosesOnSessionEnd(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("attach client did not exit when the session ended")
 	}
+	select {
+	case err := <-readErr:
+		t.Fatalf("read attach pty: %v", err)
+	default:
+	}
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("attach client wait: %v", err)
 	}
@@ -580,7 +650,7 @@ func TestAttachShowDetachInstructionsReservesLine(t *testing.T) {
 	}
 
 	c := startAttachE2EClient(t, dir, "hint", &pty.Winsize{Rows: 50, Cols: 120}, "--show-detach-instructions")
-	defer c.ptmx.Close()
+	defer closePTY(t, c.ptmx)
 
 	// The detach hint is drawn on the bottom row and a scroll region keeps
 	// session output confined to the rows above it.
@@ -665,7 +735,7 @@ done`
 	}
 
 	c := startAttachE2EClient(t, dir, "wreck", &pty.Winsize{Rows: 20, Cols: 80}, "--show-detach-instructions")
-	defer c.ptmx.Close()
+	defer closePTY(t, c.ptmx)
 
 	c.waitFor(t, "detach: ctrl+\\")
 	time.Sleep(300 * time.Millisecond)
@@ -706,7 +776,7 @@ func TestAttachShowDetachInstructionsOneRowTerminal(t *testing.T) {
 	}
 
 	c := startAttachE2EClient(t, dir, "hint1", &pty.Winsize{Rows: 20, Cols: 120}, "--show-detach-instructions")
-	defer c.ptmx.Close()
+	defer closePTY(t, c.ptmx)
 
 	c.waitFor(t, "detach: ctrl+\\")
 
@@ -750,7 +820,11 @@ func TestAttachReportsEndedAndMissingSessions(t *testing.T) {
 	if errObj["code"] != "session_not_found" {
 		t.Fatalf("missing session code = %v, want session_not_found; stderr=%q", errObj["code"], res.stderr)
 	}
-	if msg, _ := errObj["error"].(string); !strings.Contains(msg, "does not exist") {
+	msg, ok := errObj["error"].(string)
+	if !ok {
+		t.Fatalf("missing session error = %T, want string; stderr=%q", errObj["error"], res.stderr)
+	}
+	if !strings.Contains(msg, "does not exist") {
 		t.Fatalf("missing session error = %q, want mention of not existing", msg)
 	}
 
@@ -770,7 +844,11 @@ func TestAttachReportsEndedAndMissingSessions(t *testing.T) {
 	if errObj["code"] != "session_ended" {
 		t.Fatalf("ended session code = %v, want session_ended; stderr=%q", errObj["code"], res.stderr)
 	}
-	if msg, _ := errObj["error"].(string); !strings.Contains(msg, "already ended") {
+	msg, ok = errObj["error"].(string)
+	if !ok {
+		t.Fatalf("ended session error = %T, want string; stderr=%q", errObj["error"], res.stderr)
+	}
+	if !strings.Contains(msg, "already ended") {
 		t.Fatalf("ended session error = %q, want mention of having ended", msg)
 	}
 }

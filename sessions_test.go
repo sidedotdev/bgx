@@ -3,6 +3,7 @@ package bgx
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -126,7 +127,11 @@ func TestListSessionsLiveSessionShadowsEndedRecord(t *testing.T) {
 	if err := os.WriteFile(recordPath, stale, 0o644); err != nil {
 		t.Fatalf("write stale record: %v", err)
 	}
-	t.Cleanup(func() { os.Remove(recordPath) })
+	t.Cleanup(func() {
+		if err := os.Remove(recordPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("remove stale record: %v", err)
+		}
+	})
 	if _, ok := EndedRecord(id); !ok {
 		t.Fatalf("injected record for %q is not readable", id)
 	}

@@ -50,9 +50,16 @@ func resolvedTempDir(t *testing.T) string {
 	}
 	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
+		if removeErr := os.RemoveAll(dir); removeErr != nil {
+			t.Fatalf("resolve temp dir: %v; remove unresolved temp dir: %v", err, removeErr)
+		}
 		t.Fatalf("resolve temp dir: %v", err)
 	}
-	t.Cleanup(func() { os.RemoveAll(resolved) })
+	t.Cleanup(func() {
+		if err := os.RemoveAll(resolved); err != nil {
+			t.Errorf("remove temp dir %s: %v", resolved, err)
+		}
+	})
 	return resolved
 }
 

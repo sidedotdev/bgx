@@ -3,6 +3,7 @@ package bgx
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,11 +17,27 @@ var version = "0.0.0-dev"
 
 // Run executes the bgx command and emits machine-readable errors.
 func Run(ctx context.Context, args []string) error {
+	return runCLI(ctx, args, os.Stderr)
+}
+
+func runCLI(ctx context.Context, args []string, stderr io.Writer) error {
+	var commandErr error
+	ctx = context.WithValue(ctx, commandErrorKey{}, &commandErr)
 	if err := rootCommand().Run(ctx, args); err != nil {
-		emitErrorJSON(errorCode(err), err.Error())
-		return err
+		commandErr = err
 	}
-	return nil
+	if commandErr == nil {
+		return nil
+	}
+	var ce *codedError
+	var payload map[string]any
+	if errors.As(commandErr, &ce) {
+		payload = ce.payload
+	}
+	return errors.Join(
+		commandErr,
+		emitErrorJSON(stderr, errorCode(commandErr), commandErr.Error(), payload),
+	)
 }
 
 // rootCommand returns a new urfave/cli command configured with all bgx

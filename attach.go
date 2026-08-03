@@ -171,9 +171,7 @@ func startTransportProcess(ctx context.Context, argv []string) (*transportConn, 
 	}
 	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
-		stdinR.Close()
-		stdinW.Close()
-		return nil, err
+		return nil, errors.Join(err, stdinR.Close(), stdinW.Close())
 	}
 	stderr := &bytes.Buffer{}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
@@ -181,14 +179,19 @@ func startTransportProcess(ctx context.Context, argv []string) (*transportConn, 
 	cmd.Stdout = stdoutW
 	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
-		stdinR.Close()
-		stdinW.Close()
-		stdoutR.Close()
-		stdoutW.Close()
-		return nil, fmt.Errorf("start transport %q: %w", argv[0], err)
+		return nil, errors.Join(
+			fmt.Errorf("start transport %q: %w", argv[0], err),
+			stdinR.Close(),
+			stdinW.Close(),
+			stdoutR.Close(),
+			stdoutW.Close(),
+		)
 	}
-	stdinR.Close()
-	stdoutW.Close()
+	if err := errors.Join(stdinR.Close(), stdoutW.Close()); err != nil {
+		killErr := cmd.Process.Kill()
+		waitErr := cmd.Wait()
+		return nil, errors.Join(err, killErr, waitErr, stdinW.Close(), stdoutR.Close())
+	}
 	return &transportConn{cmd: cmd, stdin: stdinW, stdout: stdoutR, stderr: stderr}, nil
 }
 
@@ -200,17 +203,20 @@ func (c *transportConn) Write(p []byte) (int, error) { return c.stdin.Write(p) }
 // The stdout side is closed last so a still-blocked reader unblocks.
 func (c *transportConn) Close() error {
 	c.closeOnce.Do(func() {
-		_ = c.stdin.Close()
+		stdinErr := c.stdin.Close()
 		waited := make(chan error, 1)
 		go func() { waited <- c.cmd.Wait() }()
 		select {
 		case err := <-waited:
-			c.closeErr = err
+			c.closeErr = errors.Join(stdinErr, err)
 		case <-time.After(transportShutdownGrace):
-			_ = c.cmd.Process.Kill()
-			c.closeErr = <-waited
+			killErr := c.cmd.Process.Kill()
+			if errors.Is(killErr, os.ErrProcessDone) {
+				killErr = nil
+			}
+			c.closeErr = errors.Join(stdinErr, killErr, <-waited)
 		}
-		_ = c.stdout.Close()
+		c.closeErr = errors.Join(c.closeErr, c.stdout.Close())
 	})
 	return c.closeErr
 }

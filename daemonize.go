@@ -25,7 +25,10 @@ func InterceptDaemon() {
 	}
 	// Drop the marker so the session's command doesn't inherit it and get
 	// mistaken for a daemon re-exec itself.
-	os.Unsetenv(daemonConfigEnv)
+	if err := os.Unsetenv(daemonConfigEnv); err != nil {
+		fmt.Fprintf(os.Stderr, "bgx daemon: clear config marker: %v\n", err)
+		os.Exit(1)
+	}
 	var cfg daemon.Config
 	if err := json.Unmarshal([]byte(payload), &cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "bgx daemon: invalid config: %v\n", err)
