@@ -190,6 +190,11 @@ func TestRuntimeDirAccessDeniedFallsBack(t *testing.T) {
 	if rd, ok := m["retention_dir"].(string); !ok || !strings.HasPrefix(rd, tmp) {
 		t.Fatalf("retention_dir = %v, want under %s", m["retention_dir"], tmp)
 	}
+
+	wait := sb.bgx(t, tmp, []string{xdg, home}, env, "wait", "fs-fallback")
+	if wait.exitCode != 0 {
+		t.Fatalf("wait exit=%d stderr=%q stdout=%q", wait.exitCode, wait.stderr, wait.stdout)
+	}
 }
 
 // TestAllFallbacksDeniedReportsError verifies that when every candidate

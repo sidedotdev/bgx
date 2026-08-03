@@ -21,7 +21,7 @@ intent_links:
       - internal/cli/cli_test.go
       - internal/cli/cli_test.go:TestRootCommandsHaveLibraryOperations
       - internal/cli/cli_test.go:TestRootCommandFlagsHaveMirroredOptionFields
-  - intent: "#constrants"
+  - intent: "#constraints"
     code:
       - dirs.go:EnsureDirs
       - internal/cli/cli.go

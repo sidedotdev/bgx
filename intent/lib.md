@@ -68,7 +68,7 @@ intent_links:
       - start_test.go:TestRunMirrorsCLIOptions
       - internal/cli/cli_test.go:TestRootCommandsHaveLibraryOperations
       - internal/cli/cli_test.go:TestRootCommandFlagsHaveMirroredOptionFields
-  - intent: "#constrants"
+  - intent: "#constraints"
     code:
       - attach.go:Attach
       - attach_api_test.go
