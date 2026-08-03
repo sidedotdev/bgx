@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/sidedotdev/bgx/daemon"
-	"github.com/sidedotdev/bgx/scrollback"
 	cli "github.com/urfave/cli/v3"
 )
 
@@ -118,17 +117,15 @@ func runAction(ctx context.Context, cmd *cli.Command) error {
 		return failJSON(codeInvalidArgument, "run: socket path for id %q exceeds %d bytes", id, maxSocketPathLen)
 	}
 
-	info, err := Start(ctx, id, command, StartOptions{
-		Metadata:       metadata,
-		OverwriteID:    cmd.Bool("overwrite-id"),
-		Concurrency:    cmd.Int("concurrency"),
-		RetentionCount: cmd.Int("retention"),
-		Scrollback: scrollback.Config{
-			HeadSize:    cmd.Int("head-size"),
-			TailSize:    cmd.Int("tail-size"),
-			Storage:     scrollback.StorageKind(cmd.String("storage")),
-			StoragePath: cmd.String("storage-path"),
-		},
+	info, err := Run(ctx, id, command, RunOptions{
+		OverwriteID: cmd.Bool("overwrite-id"),
+		Metadata:    metadata,
+		HeadSize:    cmd.Int("head-size"),
+		TailSize:    cmd.Int("tail-size"),
+		Storage:     cmd.String("storage"),
+		StoragePath: cmd.String("storage-path"),
+		Retention:   cmd.Int("retention"),
+		Concurrency: cmd.Int("concurrency"),
 	})
 	if err != nil {
 		var climit *ConcurrencyLimitError

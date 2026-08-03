@@ -1,7 +1,6 @@
 package bgx_test
 
 import (
-	"context"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -9,22 +8,14 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"github.com/sidedotdev/bgx"
 )
-
-// TestCLIAdapterSurface pins the thin CLI adapter that cmd/bgx builds on: the
-// process hooks are exported while the urfave/cli command tree stays internal.
-func TestCLIAdapterSurface(t *testing.T) {
-	var _ func(context.Context, []string) error = bgx.Run
-	var _ func() = bgx.InterceptDaemon
-}
 
 const cliImportPath = "github.com/urfave/cli/v3"
 
 // TestPublicSurfaceHasNoCLIFrameworkTypes guards the typed-library-only
 // contract: no exported declaration in the root package may mention a
-// urfave/cli type in its signature or definition.
+// urfave/cli type in its signature or definition, and top-level argv runners
+// must remain internal.
 func TestPublicSurfaceHasNoCLIFrameworkTypes(t *testing.T) {
 	fset := token.NewFileSet()
 	pkgs, err := parser.ParseDir(fset, ".", func(fi fs.FileInfo) bool {
@@ -39,14 +30,14 @@ func TestPublicSurfaceHasNoCLIFrameworkTypes(t *testing.T) {
 	}
 	for fileName, file := range pkg.Files {
 		aliases := cliImportAliases(file)
-		if len(aliases) == 0 {
-			continue
-		}
 		for _, decl := range file.Decls {
 			switch d := decl.(type) {
 			case *ast.FuncDecl:
 				if !d.Name.IsExported() || !hasExportedReceiver(d) {
 					continue
+				}
+				if isCLIArgvAdapter(d, file) {
+					t.Errorf("%s: exported func %s exposes the top-level CLI action", fileName, d.Name.Name)
 				}
 				if refsAlias(d.Type, aliases) {
 					t.Errorf("%s: exported func %s exposes %s types", fileName, d.Name.Name, cliImportPath)
@@ -76,19 +67,7 @@ func TestPublicSurfaceHasNoCLIFrameworkTypes(t *testing.T) {
 // cliImportAliases returns the identifiers file uses to refer to the
 // urfave/cli import, or an empty map when the file does not import it.
 func cliImportAliases(file *ast.File) map[string]bool {
-	aliases := map[string]bool{}
-	for _, imp := range file.Imports {
-		path, err := strconv.Unquote(imp.Path.Value)
-		if err != nil || path != cliImportPath {
-			continue
-		}
-		name := "cli"
-		if imp.Name != nil {
-			name = imp.Name.Name
-		}
-		aliases[name] = true
-	}
-	return aliases
+	return importAliases(file, cliImportPath, "cli")
 }
 
 // hasExportedReceiver reports whether d is a plain function or a method whose
@@ -120,4 +99,99 @@ func refsAlias(node ast.Node, aliases map[string]bool) bool {
 		return !found
 	})
 	return found
+}
+func TestCLIArgvAdapterSignatureDetection(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "synthetic.go", `package bgx
+import (
+	"context"
+	"io"
+)
+func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) error { return nil }
+func Launch(args []string) int { return len(args) }
+func Run(ctx context.Context, id string, command []string, options struct{}) (any, error) {
+	return nil, nil
+}
+`, 0)
+	if err != nil {
+		t.Fatalf("parse synthetic API: %v", err)
+	}
+
+	detected := map[string]bool{}
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok {
+			detected[fn.Name.Name] = isCLIArgvAdapter(fn, file)
+		}
+	}
+	if !detected["Execute"] {
+		t.Error("renamed context-aware argv runner was not detected")
+	}
+	if !detected["Launch"] {
+		t.Error("argv runner without context, writers, or error result was not detected")
+	}
+	if detected["Run"] {
+		t.Error("typed Run operation was detected as an argv runner")
+	}
+}
+func isCLIArgvAdapter(fn *ast.FuncDecl, file *ast.File) bool {
+	if fn.Recv != nil || fn.Type.Params == nil {
+		return false
+	}
+
+	params := flattenFieldTypes(fn.Type.Params)
+	if len(params) == 0 {
+		return false
+	}
+	if isStringSlice(params[0]) {
+		return true
+	}
+	if len(params) < 2 {
+		return false
+	}
+
+	contextAliases := importAliases(file, "context", "context")
+	return isImportedSelector(params[0], contextAliases, "Context") && isStringSlice(params[1])
+}
+func flattenFieldTypes(fields *ast.FieldList) []ast.Expr {
+	var types []ast.Expr
+	for _, field := range fields.List {
+		count := len(field.Names)
+		if count == 0 {
+			count = 1
+		}
+		for range count {
+			types = append(types, field.Type)
+		}
+	}
+	return types
+}
+func isImportedSelector(expr ast.Expr, aliases map[string]bool, name string) bool {
+	selector, ok := expr.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != name {
+		return false
+	}
+	ident, ok := selector.X.(*ast.Ident)
+	return ok && aliases[ident.Name]
+}
+func isStringSlice(expr ast.Expr) bool {
+	slice, ok := expr.(*ast.ArrayType)
+	if !ok || slice.Len != nil {
+		return false
+	}
+	element, ok := slice.Elt.(*ast.Ident)
+	return ok && element.Name == "string"
+}
+func importAliases(file *ast.File, importPath, defaultName string) map[string]bool {
+	aliases := map[string]bool{}
+	for _, imp := range file.Imports {
+		path, err := strconv.Unquote(imp.Path.Value)
+		if err != nil || path != importPath {
+			continue
+		}
+		if imp.Name != nil {
+			aliases[imp.Name.Name] = true
+		} else {
+			aliases[defaultName] = true
+		}
+	}
+	return aliases
 }

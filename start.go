@@ -10,6 +10,18 @@ import (
 	"github.com/sidedotdev/bgx/scrollback"
 )
 
+// RunOptions configures Run. Its fields mirror the bgx run command options.
+type RunOptions struct {
+	OverwriteID bool
+	Metadata    map[string]string
+	HeadSize    int
+	TailSize    int
+	Storage     string
+	StoragePath string
+	Retention   int
+	Concurrency int
+}
+
 // StartOptions configures a typed session start. The zero value matches the
 // CLI run defaults.
 type StartOptions struct {
@@ -43,7 +55,7 @@ var ErrSessionExists = errors.New("session already exists")
 type ConcurrencyLimitError struct {
 	Namespace string
 	Limit     int
-	Active    []*Info
+	Active    []*SessionInfo
 }
 
 func (e *ConcurrencyLimitError) Error() string {
@@ -66,12 +78,29 @@ type StartupError struct {
 func (e *StartupError) Error() string { return e.Err.Error() }
 func (e *StartupError) Unwrap() error { return e.Err }
 
+// Run launches command in a new detached session identified by id and returns
+// the live session's metadata once it is reachable.
+func Run(ctx context.Context, id string, command []string, opts RunOptions) (*SessionInfo, error) {
+	return Start(ctx, id, command, StartOptions{
+		Metadata:       opts.Metadata,
+		OverwriteID:    opts.OverwriteID,
+		Concurrency:    opts.Concurrency,
+		RetentionCount: opts.Retention,
+		Scrollback: scrollback.Config{
+			HeadSize:    opts.HeadSize,
+			TailSize:    opts.TailSize,
+			Storage:     scrollback.StorageKind(opts.Storage),
+			StoragePath: opts.StoragePath,
+		},
+	})
+}
+
 // Start launches command in a new detached session identified by id and
 // returns the live session's metadata once it is reachable. The daemon is the
 // current executable re-exec'd with a private marker, so host binaries must
 // call InterceptDaemon first in main(). ctx bounds only the readiness wait;
 // the session itself outlives the caller.
-func Start(ctx context.Context, id string, command []string, opts StartOptions) (info *Info, retErr error) {
+func Start(ctx context.Context, id string, command []string, opts StartOptions) (info *SessionInfo, retErr error) {
 	if id == "" {
 		return nil, errors.New("id must not be empty")
 	}

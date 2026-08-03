@@ -76,7 +76,26 @@ func waitEnded(t *testing.T, dir, id string) map[string]any {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		res := bgxIn(t, dir, "info", id)
-		m := decodeJSON(t, res.stdout)
+		if res.exitCode != 0 {
+			t.Fatalf(
+				"info for session %q exited with code %d; stdout=%q stderr=%q",
+				id,
+				res.exitCode,
+				res.stdout,
+				res.stderr,
+			)
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(res.stdout), &m); err != nil {
+			t.Fatalf(
+				"invalid info JSON for session %q: %q: %v; exit code=%d stderr=%q",
+				id,
+				res.stdout,
+				err,
+				res.exitCode,
+				res.stderr,
+			)
+		}
 		if m["exists"] == true && m["running"] == false {
 			return m
 		}

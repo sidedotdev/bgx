@@ -301,3 +301,51 @@ func TestTeardownStartedDaemonReapsProcessAndRemovesStderr(t *testing.T) {
 		t.Fatalf("stderr file still exists or stat failed unexpectedly: %v", statErr)
 	}
 }
+func TestRunMirrorsCLIOptions(t *testing.T) {
+	id := "runlib/options"
+	storageDir := t.TempDir()
+	const output = "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
+
+	info, err := Run(context.Background(), id, []string{"sh", "-c", "printf '" + output + "'"}, RunOptions{
+		OverwriteID: true,
+		Metadata:    map[string]string{"kind": "run-options"},
+		HeadSize:    8,
+		TailSize:    8,
+		Storage:     "disk",
+		StoragePath: storageDir,
+		Retention:   2,
+		Concurrency: 1,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if info.ID != id {
+		t.Fatalf("Run info id = %q, want %q", info.ID, id)
+	}
+
+	ended := waitEnded(t, id)
+	if ended.Metadata["kind"] != "run-options" {
+		t.Fatalf("ended metadata = %v, want kind=run-options", ended.Metadata)
+	}
+
+	history, err := os.ReadFile(daemon.HistoryPath(retentionDir(), id))
+	if err != nil {
+		t.Fatalf("read history: %v", err)
+	}
+	if !strings.Contains(string(history), output[:8]) {
+		t.Fatalf("history %q does not contain head %q", history, output[:8])
+	}
+	if !strings.Contains(string(history), output[len(output)-8:]) {
+		t.Fatalf("history %q does not contain tail %q", history, output[len(output)-8:])
+	}
+	if strings.Contains(string(history), output[8:len(output)-8]) {
+		t.Fatalf("history %q contains discarded middle", history)
+	}
+
+	if _, err := Run(context.Background(), id, []string{"sh", "-c", "exit 0"}, RunOptions{
+		OverwriteID: true,
+	}); err != nil {
+		t.Fatalf("overwrite Run: %v", err)
+	}
+	waitEnded(t, id)
+}

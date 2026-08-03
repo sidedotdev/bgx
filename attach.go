@@ -21,62 +21,58 @@ import (
 	cli "github.com/urfave/cli/v3"
 )
 
+// AttachOptions configures an interactive attachment.
+type AttachOptions struct {
+	ShowDetachInstructions bool
+	SSH                    string
+	Via                    []string
+	Terminal               Terminal
+}
+
+// AttachOptionsError reports an invalid combination of attachment options.
+type AttachOptionsError struct {
+	Err error
+}
+
+func (e *AttachOptionsError) Error() string {
+	return fmt.Sprintf("attach: %v", e.Err)
+}
+
+func (e *AttachOptionsError) Unwrap() error {
+	return e.Err
+}
+
 // errAttachSocketDial marks a failure to open the attach socket connection, so
-// the CLI can report the session as unavailable rather than as a protocol
-// failure.
+// an attachment can distinguish a liveness race from a protocol failure.
 var errAttachSocketDial = errors.New("session socket dial failed")
 
-// attachAction connects to a running session, replays its current screen, and
-// bridges the local terminal to the session's PTY until the user detaches with
-// ctrl+\ (which keeps the session running). With --ssh or --via the session is
-// remote: a transport subprocess running `bgx bridge <id>` on the far side
-// stands in for the local socket connection.
-func attachAction(ctx context.Context, cmd *cli.Command) error {
-	id := cmd.Args().First()
+// Attach connects a terminal to a local or remote running session until the
+// session ends, the user detaches, the terminal closes, or ctx is canceled.
+func Attach(ctx context.Context, id string, opts AttachOptions) error {
 	if id == "" {
-		return failJSON(codeInvalidArgument, "attach: an id is required")
+		return &AttachOptionsError{Err: errors.New("an id is required")}
 	}
-	showInstructions := cmd.Bool("show-detach-instructions")
-	sshHost := cmd.String("ssh")
-	var via []string
-	// Argument parsing stops at the id so --via can consume every following
-	// argument as the transport command; the other flags stay usable on either
-	// side of the id.
-	rest := cmd.Args().Slice()[1:]
-	for i := 0; i < len(rest); i++ {
-		switch rest[i] {
-		case "--show-detach-instructions":
-			showInstructions = true
-		case "--ssh":
-			if i == len(rest)-1 {
-				return failJSON(codeInvalidArgument, "attach: --ssh requires a host")
-			}
-			i++
-			sshHost = rest[i]
-		case "--via":
-			if i == len(rest)-1 {
-				return failJSON(codeInvalidArgument, "attach: --via requires a command")
-			}
-			via = rest[i+1:]
-			i = len(rest)
-		default:
-			return failJSON(codeInvalidArgument, "attach: unexpected argument %q", rest[i])
-		}
+	if opts.SSH != "" && opts.Via != nil {
+		return &AttachOptionsError{Err: errors.New("--ssh and --via are mutually exclusive")}
 	}
-	if sshHost != "" && len(via) > 0 {
-		return failJSON(codeInvalidArgument, "attach: --ssh and --via are mutually exclusive")
+	if opts.Via != nil && len(opts.Via) == 0 {
+		return &AttachOptionsError{Err: errors.New("--via requires a command")}
 	}
-	if sshHost != "" {
-		via = []string{"ssh", sshHost}
+
+	terminal := opts.Terminal
+	if terminal == nil {
+		terminal = NewProcessTerminal()
+	}
+
+	via := append([]string(nil), opts.Via...)
+	if opts.SSH != "" {
+		via = []string{"ssh", opts.SSH}
 	}
 
 	var dial Dialer
 	var transport *transportConn
-	if len(via) > 0 {
-		// The transport command (e.g. ssh) runs `bgx bridge <id>` on the far
-		// side, so its stdio carries the same one-connection attach protocol a
-		// local socket would.
-		argv := append(append([]string(nil), via...), "bgx", "bridge", id)
+	if via != nil {
+		argv := append(via, "bgx", "bridge", id)
 		dial = func(ctx context.Context) (io.ReadWriteCloser, error) {
 			tc, err := startTransportProcess(ctx, argv)
 			if err != nil {
@@ -88,7 +84,13 @@ func attachAction(ctx context.Context, cmd *cli.Command) error {
 	} else {
 		info, ok := liveInfo(id)
 		if !ok || !info.Running {
-			return failSessionUnavailable("attach", id, ok && !info.Running)
+			if ok || func() bool {
+				_, ended := endedRecord(id)
+				return ended
+			}() {
+				return &SessionEndedError{Operation: "attach", ID: id}
+			}
+			return sessionNotFound("attach", id, nil)
 		}
 		dial = func(ctx context.Context) (io.ReadWriteCloser, error) {
 			var dialer net.Dialer
@@ -101,34 +103,99 @@ func attachAction(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	var options []AttachOption
-	if showInstructions {
+	if opts.ShowDetachInstructions {
 		options = append(options, WithDetachInstructions())
 	}
-	if err := NewClient(dial).Attach(ctx, NewProcessTerminal(), options...); err != nil {
-		// A remote bgx bridge reports why the session is unavailable on the
-		// transport's stderr; surface it as the single local error so the
-		// remote session_not_found/session_ended semantics are preserved.
-		if transport != nil {
-			if code, msg, ok := transport.remoteBGXError(); ok {
-				return failJSON(code, "%s", msg)
-			}
-		}
-		// The session can end between the liveness check and the dial.
-		if errors.Is(err, errAttachSocketDial) {
-			return failSessionUnavailable("attach", id, false)
-		}
-		var respErr *ResponseError
-		if errors.As(err, &respErr) {
-			return failJSON(codeAttachFailed, "attach: %s", respErr.Message)
-		}
-		if transport != nil {
-			if detail := transport.stderrOutput(); detail != "" {
-				return failJSON(codeAttachFailed, "attach: %v: %s", err, detail)
-			}
-		}
-		return failJSON(codeAttachFailed, "attach: %v", err)
+	err := NewClient(dial).Attach(ctx, terminal, options...)
+	if err == nil {
+		return nil
 	}
-	return nil
+
+	if transport != nil {
+		if code, message, ok := transport.remoteBGXError(); ok {
+			cause := errors.New(message)
+			switch code {
+			case codeSessionNotFound:
+				return sessionNotFound("attach", id, cause)
+			case codeSessionEnded:
+				return &SessionEndedError{Operation: "attach", ID: id, Err: cause}
+			}
+		}
+	}
+	if errors.Is(err, errAttachSocketDial) {
+		if _, ended := endedRecord(id); ended {
+			return &SessionEndedError{Operation: "attach", ID: id, Err: err}
+		}
+		return sessionNotFound("attach", id, err)
+	}
+	if transport != nil {
+		if detail := transport.stderrOutput(); detail != "" {
+			return fmt.Errorf("attach: %w: %s", err, detail)
+		}
+	}
+	return err
+}
+
+// attachAction connects to a running session, replays its current screen, and
+// bridges the local terminal to the session's PTY until the user detaches with
+// ctrl+\ (which keeps the session running). With --ssh or --via the session is
+// remote: a transport subprocess running `bgx bridge <id>` on the far side
+// stands in for the local socket connection.
+func attachAction(ctx context.Context, cmd *cli.Command) error {
+	id := cmd.Args().First()
+	if id == "" {
+		return failJSON(codeInvalidArgument, "attach: an id is required")
+	}
+	opts := AttachOptions{
+		ShowDetachInstructions: cmd.Bool("show-detach-instructions"),
+		SSH:                    cmd.String("ssh"),
+	}
+	// Argument parsing stops at the id so --via can consume every following
+	// argument as the transport command; the other flags stay usable on either
+	// side of the id.
+	rest := cmd.Args().Slice()[1:]
+	for i := 0; i < len(rest); i++ {
+		switch rest[i] {
+		case "--show-detach-instructions":
+			opts.ShowDetachInstructions = true
+		case "--ssh":
+			if i == len(rest)-1 {
+				return failJSON(codeInvalidArgument, "attach: --ssh requires a host")
+			}
+			i++
+			opts.SSH = rest[i]
+		case "--via":
+			if i == len(rest)-1 {
+				return failJSON(codeInvalidArgument, "attach: --via requires a command")
+			}
+			opts.Via = rest[i+1:]
+			i = len(rest)
+		default:
+			return failJSON(codeInvalidArgument, "attach: unexpected argument %q", rest[i])
+		}
+	}
+
+	err := Attach(ctx, id, opts)
+	if err == nil {
+		return nil
+	}
+	var optionsErr *AttachOptionsError
+	if errors.As(err, &optionsErr) {
+		return failJSON(codeInvalidArgument, "%v", optionsErr)
+	}
+	var notFound *SessionNotFoundError
+	if errors.As(err, &notFound) {
+		return failJSON(codeSessionNotFound, "attach: session %q does not exist", id)
+	}
+	var ended *SessionEndedError
+	if errors.As(err, &ended) {
+		return failJSON(codeSessionEnded, "attach: session %q has already ended", id)
+	}
+	var respErr *ResponseError
+	if errors.As(err, &respErr) {
+		return failJSON(codeAttachFailed, "attach: %s", respErr.Message)
+	}
+	return failJSON(codeAttachFailed, "attach: %v", err)
 }
 
 // failSessionUnavailable reports the distinct reason a session cannot be

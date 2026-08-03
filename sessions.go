@@ -12,8 +12,8 @@ type ListOptions struct {
 // with retained ended records, where a live session shadows the retained
 // record for the same id. The result is sorted by id and never nil, so it can
 // be marshaled directly as a JSON array.
-func ListSessions(opts ListOptions) []*Info {
-	byID := make(map[string]*Info)
+func ListSessions(opts ListOptions) []*SessionInfo {
+	byID := make(map[string]*SessionInfo)
 	for _, info := range listRunning() {
 		byID[info.ID] = info
 	}
@@ -22,7 +22,7 @@ func ListSessions(opts ListOptions) []*Info {
 			byID[info.ID] = info
 		}
 	}
-	merged := make([]*Info, 0, len(byID))
+	merged := make([]*SessionInfo, 0, len(byID))
 	for _, info := range byID {
 		merged = append(merged, info)
 	}
@@ -30,18 +30,18 @@ func ListSessions(opts ListOptions) []*Info {
 }
 
 // ListRunning returns the live sessions matching opts, sorted by id.
-func ListRunning(opts ListOptions) []*Info {
+func ListRunning(opts ListOptions) []*SessionInfo {
 	return filterSessions(listRunning(), opts)
 }
 
 // ListEnded returns the retained ended-session records matching opts, sorted
 // by id.
-func ListEnded(opts ListOptions) []*Info {
+func ListEnded(opts ListOptions) []*SessionInfo {
 	return filterSessions(listEnded(), opts)
 }
 
 // EndedRecord returns the retained record for an ended session, if one exists.
-func EndedRecord(id string) (*Info, bool) {
+func EndedRecord(id string) (*SessionInfo, bool) {
 	info, ok := endedRecord(id)
 	if !ok {
 		return nil, false
@@ -50,8 +50,8 @@ func EndedRecord(id string) (*Info, bool) {
 	return info, true
 }
 
-func filterSessions(in []*Info, opts ListOptions) []*Info {
-	out := []*Info{}
+func filterSessions(in []*SessionInfo, opts ListOptions) []*SessionInfo {
+	out := []*SessionInfo{}
 	for _, info := range in {
 		if matchesMetadata(info, opts.Metadata) {
 			out = append(out, info)

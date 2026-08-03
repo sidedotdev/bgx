@@ -14,12 +14,12 @@ import (
 // Dialer opens a fresh stream for one client operation.
 type Dialer func(context.Context) (io.ReadWriteCloser, error)
 
-// Info describes a session at a point in time.
-type Info = daemon.Info
+// SessionInfo describes a session at a point in time.
+type SessionInfo = daemon.Info
 
 // ExitResult is returned by operations that wait for a session to exit.
 type ExitResult struct {
-	Info     *Info
+	Info     *SessionInfo
 	ExitCode int
 }
 
@@ -58,7 +58,7 @@ func NewClient(dialer Dialer) *Client {
 }
 
 // Info returns the current session information.
-func (c *Client) Info(ctx context.Context) (*Info, error) {
+func (c *Client) Info(ctx context.Context) (*SessionInfo, error) {
 	resp, err := c.request(ctx, daemon.Request{Op: "info"})
 	if err != nil {
 		return nil, err

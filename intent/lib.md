@@ -3,14 +3,13 @@ intent_links:
   - intent: "#bgx-library"
     code:
       - main.go:rootCommand
-      - main.go:Run
       - commands.go
       - commands_test.go
       - attach.go
       - attachview.go
       - client.go
       - client_api.go:Dialer
-      - client_api.go:Info
+      - client_api.go:SessionInfo
       - client_api.go:ExitResult
       - client_api.go:ResponseError
       - client_api.go:ProtocolError
@@ -53,6 +52,36 @@ intent_links:
       - e2e/attach_errors_test.go
       - e2e/main_test.go:run
       - .github/workflows/build.yml
+  - intent: "#api"
+    code:
+      - start.go:RunOptions
+      - start.go:Run
+      - attach.go:AttachOptions
+      - attach.go:Attach
+      - attach_api_test.go
+      - command_api.go
+      - command_api_test.go
+      - dirs.go:EnsureDirs
+      - internal/cli/cli.go
+      - internal/cli/cli_test.go
+      - client.go:runAction
+      - start_test.go:TestRunMirrorsCLIOptions
+      - internal/cli/cli_test.go:TestRootCommandsHaveLibraryOperations
+      - internal/cli/cli_test.go:TestRootCommandFlagsHaveMirroredOptionFields
+  - intent: "#constrants"
+    code:
+      - attach.go:Attach
+      - attach_api_test.go
+      - command_api.go
+      - command_api_test.go
+      - dirs.go:EnsureDirs
+      - internal/cli/cli.go
+      - internal/cli/cli_test.go
+      - cmd/bgx/main.go:main
+      - internal/cli/cli_test.go:TestRootCommandsHaveLibraryOperations
+      - internal/cli/cli_test.go:TestRootCommandFlagsHaveMirroredOptionFields
+      - lib_test.go:TestPublicSurfaceHasNoCLIFrameworkTypes
+      - lib_test.go:TestCLIArgvAdapterSignatureDetection
 ---
 
 # bgx library

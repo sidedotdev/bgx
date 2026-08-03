@@ -3,15 +3,37 @@ intent_links:
   - intent: "#bgx-library"
     code:
       - main.go:rootCommand
-      - main.go:Run
       - commands.go
       - commands_test.go
+      - attach.go:AttachOptions
+      - attach.go:Attach
+      - attach_api_test.go
+      - command_api.go
+      - command_api_test.go
+      - internal/cli/cli.go
+      - internal/cli/cli_test.go
       - lib_test.go
       - cmd/bgx/main.go
+  - intent: "#api"
+    code:
+      - dirs.go:EnsureDirs
+      - internal/cli/cli.go
+      - internal/cli/cli_test.go
+      - internal/cli/cli_test.go:TestRootCommandsHaveLibraryOperations
+      - internal/cli/cli_test.go:TestRootCommandFlagsHaveMirroredOptionFields
+  - intent: "#constrants"
+    code:
+      - dirs.go:EnsureDirs
+      - internal/cli/cli.go
+      - internal/cli/cli_test.go
+      - internal/cli/cli_test.go:TestRootCommandsHaveLibraryOperations
+      - internal/cli/cli_test.go:TestRootCommandFlagsHaveMirroredOptionFields
+      - lib_test.go:TestPublicSurfaceHasNoCLIFrameworkTypes
+      - lib_test.go:TestCLIArgvAdapterSignatureDetection
   - intent: "#client"
     code:
       - client_api.go:Dialer
-      - client_api.go:Info
+      - client_api.go:SessionInfo
       - client_api.go:ExitResult
       - client_api.go:ResponseError
       - client_api.go:ProtocolError
@@ -25,6 +47,9 @@ intent_links:
       - client_attach.go:AttachOption
       - client_attach.go:WithDetachInstructions
       - client_attach.go:Client.Attach
+      - attach.go:AttachOptions
+      - attach.go:Attach
+      - attach_api_test.go
       - client_attach.go:withoutExpectedAttachShutdownErrors
       - client_attach_test.go
       - attachview_test.go:TestAttachViewCloseRetainsAsynchronousPaintError
@@ -50,6 +75,8 @@ intent_links:
       - client_api_test.go
   - intent: "#sessions"
     code:
+      - start.go:RunOptions
+      - start.go:Run
       - start.go:StartOptions
       - start.go:Start
       - start.go:ErrSessionRunning

@@ -15,11 +15,6 @@ import (
 // version is the bgx release version, overridable at build time via -ldflags.
 var version = "0.0.0-dev"
 
-// Run executes the bgx command and emits machine-readable errors.
-func Run(ctx context.Context, args []string) error {
-	return runCLI(ctx, args, os.Stderr)
-}
-
 func runCLI(ctx context.Context, args []string, stderr io.Writer) error {
 	var commandErr error
 	ctx = context.WithValue(ctx, commandErrorKey{}, &commandErr)

@@ -146,3 +146,8 @@ func retentionDir() string {
 	}
 	return filepath.Join(base, "ended")
 }
+
+// EnsureDirs resolves and prepares the directories used by session operations.
+func EnsureDirs() error {
+	return ensureDirs()
+}

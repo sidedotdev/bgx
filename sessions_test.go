@@ -13,7 +13,7 @@ import (
 )
 
 // findSession returns the entry with the given id, if present.
-func findSession(sessions []*Info, id string) (*Info, bool) {
+func findSession(sessions []*SessionInfo, id string) (*SessionInfo, bool) {
 	for _, s := range sessions {
 		if s.ID == id {
 			return s, true
@@ -101,7 +101,7 @@ func TestEndedRecordLookup(t *testing.T) {
 }
 
 // sortedByID reports whether sessions are in ascending id order.
-func sortedByID(sessions []*Info) bool {
+func sortedByID(sessions []*SessionInfo) bool {
 	return sort.SliceIsSorted(sessions, func(i, j int) bool { return sessions[i].ID < sessions[j].ID })
 }
 
@@ -117,7 +117,7 @@ func TestListSessionsLiveSessionShadowsEndedRecord(t *testing.T) {
 	// Inject a stale retained record under the live session's id, as a crashed
 	// overwrite could leave behind, so the merge preference is observable.
 	recordPath := daemon.RecordPath(retentionDir(), id)
-	stale, err := json.Marshal(&Info{ID: id, Metadata: map[string]string{"origin": "stale"}})
+	stale, err := json.Marshal(&SessionInfo{ID: id, Metadata: map[string]string{"origin": "stale"}})
 	if err != nil {
 		t.Fatalf("marshal stale record: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestListSessionsLiveSessionShadowsEndedRecord(t *testing.T) {
 		t.Fatalf("injected record for %q is not readable", id)
 	}
 
-	var matches []*Info
+	var matches []*SessionInfo
 	for _, s := range ListSessions(ListOptions{}) {
 		if s.ID == id {
 			matches = append(matches, s)
