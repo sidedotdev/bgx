@@ -98,9 +98,41 @@ bgx), and all other combinations of library vs cli and local vs remote.
 
 ## API
 
-The bgx API provides an interface that mirrors the cli. For example `bgx.Run` is
-the library equivalent of the `bgx run` cli subcommand. Option names should be
-mirrored as well.
+The bgx API provides methods that mirror cli subcommands. Arguments/options are
+very roughly mirrored as well, but only when appropriate and in a way that
+matches idiomatic golang. We don't require 1:1 match, preferring the CLI and API
+to be ergonomic and match local conventions.
+
+For example `bgx.Run` is the library equivalent of the `bgx run` cli subcommand,
+and supporting overwriting the ID makes sense, but supporting `async` does not:
+`bgx.Run` is instead only async and can be made sync by programmatically
+invoking `bgx.Wait`. In addition, `bgx.Run` does not take in a `ctx` to avoid
+confusion around what is being canceled (as the underlying session is not tied
+to the ctx), so we use a separate `StartupTimeout option` instead. However
+`bgx.Wait` does take a `ctx`.
+
+However, similar to the cli, reasonable defaults are set for all options when
+they are not explicitly configured. These two usage examples demonstrate the
+desired surface and style. Example 1, most basic usage:
+
+```go
+// Run is always async
+// Default options use env and cwd of current process and cli defaults for rest if not set
+sessionInfo, err := bgx.Run("build-123", []string{"make", "all"}, bgx.RunSpec{}) 
+```
+
+Here is a more complex configuration:
+
+```go
+sessionInfo, err := bgx.Run(id, arvg, bgx.RunSpec{
+    Dir:           "/mnt/workspace",
+    TailSize:      1 << 20,
+    Env:           map[string]string{"FOO": "1"},
+    StartTimeout:  time.Second,
+})
+
+res, err := bgx.Wait(ctx, id)
+```
 
 ## Constraints
 
