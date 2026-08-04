@@ -22,7 +22,8 @@ A release script invokes `gh` to create a release, given a ref or tag:
 - Waits for the workflow to complete
 - On failure, syncs detailed logs from github actions to an in-repo gitignored
 directory, enabling grep debugging.
-- An option exists to list previous runs for a given ref or tag, and
+- An option exists to list previous runs for a given ref or tag
+- An option exists to remove a failed prerelease and delete local+remote tag
 
 ## Github Actions
 
