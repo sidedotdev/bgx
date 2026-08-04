@@ -25,7 +25,8 @@ release once tests pass and builds upload.
 Options:
   --target <ref>  Git ref the tag is created at (default: main, or the current
                   branch for --alpha so the changes under test are built).
-  --list          List previous build workflow runs for the ref or tag and exit.
+  --list          List previous build workflow runs for the supplied ref or tag.
+  --delete        Delete a failed prerelease and its local and remote tags.
   --no-promote    Leave the release as a pre-release (opt out of promotion).
   --alpha         Create an alpha pre-release to verify the workflow: never
                   promoted, and after the workflow a build for the current
@@ -80,6 +81,32 @@ list_runs() {
 			| \"\(.id)\t\(.status)\t\(.conclusion // \"-\")\t\(.html_url)\""
 }
 
+# delete_failed_prerelease validates all safety conditions before removing any
+# state, preventing a successful build or published release from being erased.
+delete_failed_prerelease() {
+	local tag="$1" prerelease sha run_id status conclusion
+
+	prerelease="$(gh release view "$tag" --json isPrerelease --jq '.isPrerelease')"
+	[ "$prerelease" = true ] || fail "$tag is not a prerelease"
+
+	sha="$(git -C "$REPO_ROOT" rev-parse --verify "${tag}^{commit}")"
+	run_id="$(run_id_for "$sha")"
+	[ -n "$run_id" ] || fail "no $WORKFLOW run found for $tag"
+
+	IFS=$'\t' read -r status conclusion < <(
+		gh run view "$run_id" --json status,conclusion \
+			--jq '[.status, .conclusion] | @tsv'
+	)
+	if [ "$status" != completed ] || [ "$conclusion" != failure ]; then
+		fail "workflow run $run_id did not fail"
+	fi
+
+	echo "release.sh: deleting failed prerelease $tag" >&2
+	gh release delete "$tag" --yes
+	git -C "$REPO_ROOT" push origin --delete "refs/tags/$tag"
+	git -C "$REPO_ROOT" tag --delete "$tag"
+}
+
 # sync_logs mirrors a failed run's detailed logs into a gitignored directory so
 # failures can be grepped locally.
 sync_logs() {
@@ -125,32 +152,50 @@ smoke_test() {
 }
 
 main() {
-	local ref_or_tag="" target="" no_promote=false alpha=false list=false
+	local ref_or_tag="" target="" no_promote=false alpha=false list=false delete=false
 	while [ $# -gt 0 ]; do
 		case "$1" in
 			--target) shift; target="${1:-}"; [ -n "$target" ] || fail "--target requires a ref" ;;
 			--list) list=true ;;
+			--delete) delete=true ;;
 			--no-promote) no_promote=true ;;
 			--alpha) alpha=true ;;
 			-h|--help) usage; return 0 ;;
 			-*) fail "unknown option: $1" ;;
-			*) ref_or_tag="$1" ;;
+			*)
+				[ -z "$ref_or_tag" ] || fail "only one ref or tag may be supplied"
+				ref_or_tag="$1"
+				;;
 		esac
 		shift
 	done
 
 	command -v gh >/dev/null 2>&1 || fail "gh cli is required"
 
+	if [ "$list" = true ] && [ "$delete" = true ]; then
+		fail "--list and --delete cannot be used together"
+	fi
+	if [ "$list" = true ] || [ "$delete" = true ]; then
+		[ -n "$ref_or_tag" ] || {
+			[ "$list" = true ] && fail "--list requires a ref or tag"
+			fail "--delete requires a ref or tag"
+		}
+	fi
+
+	if [ "$list" = true ]; then
+		list_runs "$ref_or_tag"
+		return 0
+	fi
+	if [ "$delete" = true ]; then
+		delete_failed_prerelease "$ref_or_tag"
+		return 0
+	fi
+
 	local tag
 	if [ -n "$ref_or_tag" ]; then
 		tag="$ref_or_tag"
 	else
 		tag="$(next_minor_tag)"
-	fi
-
-	if [ "$list" = true ]; then
-		list_runs "$tag"
-		return 0
 	fi
 
 	# Alpha verification pre-releases are never promoted, and must build the

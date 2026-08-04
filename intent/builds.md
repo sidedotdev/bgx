@@ -1,5 +1,11 @@
 ---
 intent_links:
+  - intent: "#release"
+    code:
+      - scripts/release.sh:list_runs
+      - scripts/release.sh:delete_failed_prerelease
+      - scripts/release.sh:main
+      - release_script_test.go
   - intent: "#github-actions"
     code:
       - .github/workflows/build.yml
