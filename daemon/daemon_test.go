@@ -1202,3 +1202,50 @@ func TestSocketAliveRetainsLivenessWhenCloseFails(t *testing.T) {
 		t.Fatalf("socket cleanup error = %v, want %v", err, closeErr)
 	}
 }
+func TestSessionStartAppliesDirectoryAndEnvironmentOverrides(t *testing.T) {
+	t.Setenv("BGX_INHERITED", "inherited")
+	t.Setenv("BGX_OVERRIDE", "original")
+
+	dir := t.TempDir()
+	daemonDir, err := os.MkdirTemp("", "d")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(daemonDir); err != nil {
+			t.Errorf("remove daemon directory: %v", err)
+		}
+	})
+
+	retentionDir := filepath.Join(daemonDir, "ended")
+	cfg := Config{
+		ID:             "execution-settings",
+		Command:        []string{"sh", "-c", `printf '%s|%s|%s' "$PWD" "$BGX_INHERITED" "$BGX_OVERRIDE"`},
+		Dir:            dir,
+		Env:            map[string]string{"BGX_OVERRIDE": "overridden"},
+		SocketPath:     filepath.Join(daemonDir, "sock"),
+		RetentionDir:   retentionDir,
+		RetentionCount: 1,
+	}
+	s, err := newSession(cfg)
+	if err != nil {
+		t.Fatalf("new session: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- s.run()
+	}()
+	if err := <-errCh; err != nil {
+		t.Fatalf("run session: %v", err)
+	}
+
+	history, err := os.ReadFile(HistoryPath(retentionDir, cfg.ID))
+	if err != nil {
+		t.Fatalf("read history: %v", err)
+	}
+	want := dir + "|inherited|overridden"
+	if !bytes.Contains(history, []byte(want)) {
+		t.Fatalf("history %q does not contain %q", history, want)
+	}
+}

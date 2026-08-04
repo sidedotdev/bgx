@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -65,6 +66,8 @@ var errConnectionDrainTimeout = errors.New("timed out draining connection handle
 type Config struct {
 	ID             string
 	Command        []string
+	Dir            string
+	Env            map[string]string
 	Metadata       map[string]string
 	SocketPath     string
 	RetentionDir   string
@@ -259,6 +262,26 @@ func (s *Session) listen() error {
 	return nil
 }
 
+func environmentWithOverrides(overrides map[string]string) []string {
+	env := os.Environ()
+	indexes := make(map[string]int, len(env))
+	for i, entry := range env {
+		if separator := strings.IndexByte(entry, '='); separator >= 0 {
+			indexes[entry[:separator]] = i
+		}
+	}
+	for name, value := range overrides {
+		entry := name + "=" + value
+		if i, ok := indexes[name]; ok {
+			env[i] = entry
+			continue
+		}
+		indexes[name] = len(env)
+		env = append(env, entry)
+	}
+	return env
+}
+
 // start launches the command in a PTY with its own session/process group and
 // begins pumping output and input.
 func (s *Session) start() error {
@@ -266,7 +289,8 @@ func (s *Session) start() error {
 		return errors.New("daemon: empty command")
 	}
 	cmd := exec.Command(s.cfg.Command[0], s.cfg.Command[1:]...)
-	cmd.Env = os.Environ()
+	cmd.Dir = s.cfg.Dir
+	cmd.Env = environmentWithOverrides(s.cfg.Env)
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: defaultRows, Cols: defaultCols})
 	if err != nil {
 		return err

@@ -117,7 +117,7 @@ func runAction(ctx context.Context, cmd *cli.Command) error {
 		return failJSON(codeInvalidArgument, "run: socket path for id %q exceeds %d bytes", id, maxSocketPathLen)
 	}
 
-	info, err := Run(ctx, id, command, RunOptions{
+	info, err := Start(ctx, id, command, RunSpec{
 		OverwriteID: cmd.Bool("overwrite-id"),
 		Metadata:    metadata,
 		HeadSize:    cmd.Int("head-size"),
@@ -126,7 +126,7 @@ func runAction(ctx context.Context, cmd *cli.Command) error {
 		StoragePath: cmd.String("storage-path"),
 		Retention:   cmd.Int("retention"),
 		Concurrency: cmd.Int("concurrency"),
-	})
+	}.startOptions())
 	if err != nil {
 		var climit *ConcurrencyLimitError
 		var startup *StartupError

@@ -26,11 +26,35 @@ func runDir(t *testing.T) string {
 		t.Fatalf("make run dir: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := os.RemoveAll(dir); err != nil {
+		if err := removeRunDir(dir); err != nil {
 			t.Errorf("remove run dir: %v", err)
 		}
 	})
 	return dir
+}
+
+func removeRunDir(dir string) error {
+	deadline := time.Now().Add(2 * time.Second)
+	var lastErr error
+	for {
+		if err := os.RemoveAll(dir); err != nil {
+			lastErr = err
+		} else {
+			_, err := os.Stat(dir)
+			switch {
+			case errors.Is(err, os.ErrNotExist):
+				return nil
+			case err != nil:
+				lastErr = err
+			default:
+				lastErr = fmt.Errorf("%s still exists after removal", dir)
+			}
+		}
+		if time.Now().After(deadline) {
+			return lastErr
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // bgxIn runs the built binary with an isolated socket/retention environment so

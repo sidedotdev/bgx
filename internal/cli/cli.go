@@ -55,7 +55,7 @@ func (e *codedError) Unwrap() error { return e.err }
 
 type operations struct {
 	ensureDirs func() error
-	run        func(context.Context, string, []string, bgx.RunOptions) (*bgx.SessionInfo, error)
+	run        func(string, []string, bgx.RunSpec) (*bgx.SessionInfo, error)
 	info       func(context.Context, string) (*bgx.InfoResult, error)
 	wait       func(context.Context, string) (*bgx.ExitResult, error)
 	kill       func(context.Context, string) (*bgx.InfoResult, error)
@@ -263,7 +263,7 @@ func (r *runner) versionCommand() *urfave.Command {
 	}
 }
 
-func (r *runner) runAction(ctx context.Context, cmd *urfave.Command) error {
+func (r *runner) runAction(_ context.Context, cmd *urfave.Command) error {
 	args := cmd.Args().Slice()
 	if len(args) == 0 {
 		return failJSON(codeInvalidArgument, "run: an id is required")
@@ -285,7 +285,7 @@ func (r *runner) runAction(ctx context.Context, cmd *urfave.Command) error {
 		return failJSON(codeInvalidArgument, "run: socket path for id %q exceeds %d bytes", id, maxSocketPathLen)
 	}
 
-	info, err := r.ops.run(ctx, id, command, bgx.RunOptions{
+	info, err := r.ops.run(id, command, bgx.RunSpec{
 		OverwriteID: cmd.Bool("overwrite-id"),
 		Metadata:    metadata,
 		HeadSize:    cmd.Int("head-size"),

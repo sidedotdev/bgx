@@ -20,7 +20,7 @@ func stubOperations() operations {
 		ensureDirs: func() error {
 			return nil
 		},
-		run: func(context.Context, string, []string, bgx.RunOptions) (*bgx.SessionInfo, error) {
+		run: func(string, []string, bgx.RunSpec) (*bgx.SessionInfo, error) {
 			return &bgx.SessionInfo{}, nil
 		},
 		info: func(context.Context, string) (*bgx.InfoResult, error) {
@@ -78,7 +78,7 @@ func TestRootCommandsHaveLibraryOperations(t *testing.T) {
 	}
 
 	libraryOperations := map[string]any{
-		"run":     (func(context.Context, string, []string, bgx.RunOptions) (*bgx.SessionInfo, error))(bgx.Run),
+		"run":     (func(string, []string, bgx.RunSpec) (*bgx.SessionInfo, error))(bgx.Run),
 		"wait":    (func(context.Context, string) (*bgx.ExitResult, error))(bgx.Wait),
 		"kill":    (func(context.Context, string) (*bgx.InfoResult, error))(bgx.Kill),
 		"history": (func(context.Context, string) ([]byte, error))(bgx.History),
@@ -111,7 +111,7 @@ func TestRootCommandsHaveLibraryOperations(t *testing.T) {
 func TestRootCommandFlagsHaveMirroredOptionFields(t *testing.T) {
 	root := newRunner(&bytes.Buffer{}, &bytes.Buffer{}, defaultOperations()).rootCommand()
 	optionTypes := map[string]reflect.Type{
-		"run":    reflect.TypeOf(bgx.RunOptions{}),
+		"run":    reflect.TypeOf(bgx.RunSpec{}),
 		"attach": reflect.TypeOf(bgx.AttachOptions{}),
 		"list":   reflect.TypeOf(bgx.ListOptions{}),
 	}
@@ -146,12 +146,12 @@ func TestRootCommandFlagsHaveMirroredOptionFields(t *testing.T) {
 func TestRunAdapterMirrorsFlagsAndOutput(t *testing.T) {
 	var gotID string
 	var gotCommand []string
-	var gotOptions bgx.RunOptions
+	var gotSpec bgx.RunSpec
 	ops := stubOperations()
-	ops.run = func(_ context.Context, id string, command []string, opts bgx.RunOptions) (*bgx.SessionInfo, error) {
+	ops.run = func(id string, command []string, spec bgx.RunSpec) (*bgx.SessionInfo, error) {
 		gotID = id
 		gotCommand = append([]string(nil), command...)
-		gotOptions = opts
+		gotSpec = spec
 		return &bgx.SessionInfo{ID: id, Pid: 42, StartedAt: time.Unix(123, 0)}, nil
 	}
 
@@ -179,7 +179,7 @@ func TestRunAdapterMirrorsFlagsAndOutput(t *testing.T) {
 	if want := []string{"printf", "%s", "hello"}; !reflect.DeepEqual(gotCommand, want) {
 		t.Fatalf("command = %v, want %v", gotCommand, want)
 	}
-	wantOptions := bgx.RunOptions{
+	wantSpec := bgx.RunSpec{
 		OverwriteID: true,
 		Metadata:    map[string]string{"env": "test"},
 		HeadSize:    10,
@@ -189,8 +189,8 @@ func TestRunAdapterMirrorsFlagsAndOutput(t *testing.T) {
 		Retention:   7,
 		Concurrency: 5,
 	}
-	if !reflect.DeepEqual(gotOptions, wantOptions) {
-		t.Fatalf("options = %#v, want %#v", gotOptions, wantOptions)
+	if !reflect.DeepEqual(gotSpec, wantSpec) {
+		t.Fatalf("spec = %#v, want %#v", gotSpec, wantSpec)
 	}
 
 	output := decodeObject(t, stdout.Bytes())

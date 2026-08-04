@@ -5,26 +5,57 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/sidedotdev/bgx/daemon"
 	"github.com/sidedotdev/bgx/scrollback"
 )
 
-// RunOptions configures Run. Its fields mirror the bgx run command options.
-type RunOptions struct {
-	OverwriteID bool
-	Metadata    map[string]string
-	HeadSize    int
-	TailSize    int
-	Storage     string
-	StoragePath string
-	Retention   int
-	Concurrency int
+// RunSpec configures a detached command and its startup readiness wait. Its
+// zero value inherits the current process environment and working directory
+// and uses the CLI defaults for session settings.
+type RunSpec struct {
+	Dir          string
+	Env          map[string]string
+	StartTimeout time.Duration
+	OverwriteID  bool
+	Metadata     map[string]string
+	HeadSize     int
+	TailSize     int
+	Storage      string
+	StoragePath  string
+	Retention    int
+	Concurrency  int
+}
+
+func (spec RunSpec) startOptions() StartOptions {
+	return StartOptions{
+		Dir:            spec.Dir,
+		Env:            spec.Env,
+		StartTimeout:   spec.StartTimeout,
+		Metadata:       spec.Metadata,
+		OverwriteID:    spec.OverwriteID,
+		Concurrency:    spec.Concurrency,
+		RetentionCount: spec.Retention,
+		Scrollback: scrollback.Config{
+			HeadSize:    spec.HeadSize,
+			TailSize:    spec.TailSize,
+			Storage:     scrollback.StorageKind(spec.Storage),
+			StoragePath: spec.StoragePath,
+		},
+	}
 }
 
 // StartOptions configures a typed session start. The zero value matches the
 // CLI run defaults.
 type StartOptions struct {
+	// Dir sets the command's working directory. Empty inherits the current
+	// process working directory.
+	Dir string
+	// Env overrides entries inherited from the current process environment.
+	Env map[string]string
+	// StartTimeout bounds the readiness wait. Non-positive uses the default.
+	StartTimeout time.Duration
 	// Metadata tags the session with arbitrary key/value pairs surfaced by
 	// info/list and usable as list filters.
 	Metadata map[string]string
@@ -79,20 +110,10 @@ func (e *StartupError) Error() string { return e.Err.Error() }
 func (e *StartupError) Unwrap() error { return e.Err }
 
 // Run launches command in a new detached session identified by id and returns
-// the live session's metadata once it is reachable.
-func Run(ctx context.Context, id string, command []string, opts RunOptions) (*SessionInfo, error) {
-	return Start(ctx, id, command, StartOptions{
-		Metadata:       opts.Metadata,
-		OverwriteID:    opts.OverwriteID,
-		Concurrency:    opts.Concurrency,
-		RetentionCount: opts.Retention,
-		Scrollback: scrollback.Config{
-			HeadSize:    opts.HeadSize,
-			TailSize:    opts.TailSize,
-			Storage:     scrollback.StorageKind(opts.Storage),
-			StoragePath: opts.StoragePath,
-		},
-	})
+// the live session's metadata once it is reachable. The startup timeout bounds
+// only the readiness wait; the session itself outlives the call.
+func Run(id string, command []string, spec RunSpec) (*SessionInfo, error) {
+	return Start(context.Background(), id, command, spec.startOptions())
 }
 
 // Start launches command in a new detached session identified by id and
@@ -155,6 +176,8 @@ func Start(ctx context.Context, id string, command []string, opts StartOptions) 
 	dc, stderrPath, err := spawnDaemon(daemon.Config{
 		ID:             id,
 		Command:        command,
+		Dir:            opts.Dir,
+		Env:            opts.Env,
 		Metadata:       opts.Metadata,
 		SocketPath:     socketPath(id),
 		RetentionDir:   retentionDir(),
@@ -168,7 +191,11 @@ func Start(ctx context.Context, id string, command []string, opts StartOptions) 
 		retErr = joinDaemonFileCleanupError(retErr, stderrPath, os.Remove)
 	}()
 
-	info, err = waitForSession(ctx, id, dc, stderrPath, socketReadyTimeout)
+	startTimeout := opts.StartTimeout
+	if startTimeout <= 0 {
+		startTimeout = socketReadyTimeout
+	}
+	info, err = waitForSession(ctx, id, dc, stderrPath, startTimeout)
 	if err != nil {
 		return nil, &StartupError{ID: id, Err: err}
 	}

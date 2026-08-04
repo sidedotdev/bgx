@@ -18,7 +18,7 @@ func TestCommandAPIsForLiveSession(t *testing.T) {
 	ctx := context.Background()
 	id := "commandapi/live"
 
-	if _, err := Run(ctx, id, []string{"cat"}, RunOptions{
+	if _, err := Run(id, []string{"cat"}, RunSpec{
 		Metadata: map[string]string{"api": "live"},
 	}); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -72,7 +72,7 @@ func TestCommandAPIsUseEndedSessionRecords(t *testing.T) {
 	ctx := context.Background()
 	id := "commandapi/ended"
 
-	if _, err := Run(ctx, id, []string{"sh", "-c", "printf ended-output; exit 7"}, RunOptions{}); err != nil {
+	if _, err := Run(id, []string{"sh", "-c", "printf ended-output; exit 7"}, RunSpec{}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	waitEnded(t, id)
@@ -162,18 +162,17 @@ func TestCommandAPIsForMissingSession(t *testing.T) {
 }
 
 func TestListAndVersionAPIs(t *testing.T) {
-	ctx := context.Background()
 	keepID := "commandapi/list-keep"
 	dropID := "commandapi/list-drop"
 
-	if _, err := Run(ctx, keepID, []string{"sleep", "30"}, RunOptions{
+	if _, err := Run(keepID, []string{"sleep", "30"}, RunSpec{
 		Metadata: map[string]string{"group": "keep"},
 	}); err != nil {
 		t.Fatalf("Run keep session: %v", err)
 	}
 	t.Cleanup(func() { killSession(t, keepID) })
 
-	if _, err := Run(ctx, dropID, []string{"sh", "-c", "exit 0"}, RunOptions{
+	if _, err := Run(dropID, []string{"sh", "-c", "exit 0"}, RunSpec{
 		Metadata: map[string]string{"group": "drop"},
 	}); err != nil {
 		t.Fatalf("Run drop session: %v", err)

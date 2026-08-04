@@ -54,8 +54,12 @@ intent_links:
       - .github/workflows/build.yml
   - intent: "#api"
     code:
-      - start.go:RunOptions
+      - start.go:RunSpec
+      - start.go:RunSpec.startOptions
       - start.go:Run
+      - start_test.go:TestRunMirrorsCLIOptions
+      - start_test.go:TestStartTimeoutDoesNotCancelDetachedSession
+      - start_test.go:TestRunSpecZeroValueInheritsWorkingDirectory
       - attach.go:AttachOptions
       - attach.go:Attach
       - attach_api_test.go
@@ -65,7 +69,6 @@ intent_links:
       - internal/cli/cli.go
       - internal/cli/cli_test.go
       - client.go:runAction
-      - start_test.go:TestRunMirrorsCLIOptions
       - internal/cli/cli_test.go:TestRootCommandsHaveLibraryOperations
       - internal/cli/cli_test.go:TestRootCommandFlagsHaveMirroredOptionFields
   - intent: "#constraints"

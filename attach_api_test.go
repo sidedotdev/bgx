@@ -82,7 +82,7 @@ func (t *attachAPITerminal) state() (output string, entered, restored bool) {
 func TestAttachAPIUsesLocalSessionAndOptions(t *testing.T) {
 	ctx := context.Background()
 	id := "attachapi/local"
-	if _, err := Run(ctx, id, []string{"cat"}, RunOptions{}); err != nil {
+	if _, err := Run(id, []string{"cat"}, RunSpec{}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	t.Cleanup(func() { killSession(t, id) })
@@ -263,7 +263,7 @@ func TestAttachAPIReportsMissingAndEndedSessions(t *testing.T) {
 
 	ctx := context.Background()
 	id := "attachapi/ended"
-	if _, err := Run(ctx, id, []string{"true"}, RunOptions{}); err != nil {
+	if _, err := Run(id, []string{"true"}, RunSpec{}); err != nil {
 		t.Fatalf("Run ended session: %v", err)
 	}
 	waitEnded(t, id)
@@ -283,7 +283,7 @@ func TestAttachAPIReportsMissingAndEndedSessions(t *testing.T) {
 func TestAttachActionRemoteMissingIgnoresLocalEndedRecord(t *testing.T) {
 	ctx := context.Background()
 	id := "attachapi/shared-id"
-	if _, err := Run(ctx, id, []string{"true"}, RunOptions{}); err != nil {
+	if _, err := Run(id, []string{"true"}, RunSpec{}); err != nil {
 		t.Fatalf("Run ended session: %v", err)
 	}
 	waitEnded(t, id)

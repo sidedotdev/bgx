@@ -5,6 +5,7 @@ intent_links:
       - main.go:rootCommand
       - commands.go
       - commands_test.go
+      - e2e/run_test.go:removeRunDir
       - attach.go:AttachOptions
       - attach.go:Attach
       - attach_api_test.go
@@ -75,7 +76,8 @@ intent_links:
       - client_api_test.go
   - intent: "#sessions"
     code:
-      - start.go:RunOptions
+      - start.go:RunSpec
+      - start.go:RunSpec.startOptions
       - start.go:Run
       - start.go:StartOptions
       - start.go:Start
@@ -84,6 +86,12 @@ intent_links:
       - start.go:ConcurrencyLimitError
       - start.go:StartupError
       - start_test.go
+      - start_test.go:TestStartTimeoutDoesNotCancelDetachedSession
+      - start_test.go:TestRunSpecZeroValueInheritsWorkingDirectory
+      - daemon/daemon.go:Config
+      - daemon/daemon.go:environmentWithOverrides
+      - daemon/daemon.go:Session.start
+      - daemon/daemon_test.go:TestSessionStartAppliesDirectoryAndEnvironmentOverrides
       - sessions.go:ListOptions
       - sessions.go:ListSessions
       - sessions.go:ListRunning
@@ -117,6 +125,8 @@ CLI-framework types appear in the public API.
 
 ## Sessions
 - Typed session start with `run`-equivalent semantics: scrollback/retention/metadata options, per-namespace concurrency cap, readiness wait, startup-error surfacing.
+- A zero-value run specification inherits the caller's working directory and full environment. Environment entries in the specification overlay inherited values.
+- Startup timeout bounds only readiness observation; timing out does not cancel or terminate the detached session.
 - List running and ended sessions (metadata filtering); ended-record lookup.
 
 ## Client

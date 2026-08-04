@@ -306,7 +306,7 @@ func TestRunMirrorsCLIOptions(t *testing.T) {
 	storageDir := t.TempDir()
 	const output = "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
 
-	info, err := Run(context.Background(), id, []string{"sh", "-c", "printf '" + output + "'"}, RunOptions{
+	info, err := Run(id, []string{"sh", "-c", "printf '" + output + "'"}, RunSpec{
 		OverwriteID: true,
 		Metadata:    map[string]string{"kind": "run-options"},
 		HeadSize:    8,
@@ -342,10 +342,50 @@ func TestRunMirrorsCLIOptions(t *testing.T) {
 		t.Fatalf("history %q contains discarded middle", history)
 	}
 
-	if _, err := Run(context.Background(), id, []string{"sh", "-c", "exit 0"}, RunOptions{
+	if _, err := Run(id, []string{"sh", "-c", "exit 0"}, RunSpec{
 		OverwriteID: true,
 	}); err != nil {
 		t.Fatalf("overwrite Run: %v", err)
 	}
 	waitEnded(t, id)
+}
+func TestStartTimeoutDoesNotCancelDetachedSession(t *testing.T) {
+	id := "startlib/timeout"
+
+	started := time.Now()
+	_, err := Start(context.Background(), id, []string{"sh", "-c", "sleep 0.1"}, StartOptions{
+		StartTimeout: time.Nanosecond,
+	})
+	var startup *StartupError
+	if !errors.As(err, &startup) {
+		t.Fatalf("Start err = %v, want StartupError", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("Start returned after %v, want startup timeout to bound readiness wait", elapsed)
+	}
+
+	ended := waitEnded(t, id)
+	if ended.ExitCode == nil || *ended.ExitCode != 0 {
+		t.Fatalf("detached session exit code = %v, want 0", ended.ExitCode)
+	}
+}
+func TestRunSpecZeroValueInheritsWorkingDirectory(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+
+	id := "runspec/cwd"
+	if _, err := Start(context.Background(), id, []string{"pwd"}, RunSpec{}.startOptions()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitEnded(t, id)
+
+	history, err := os.ReadFile(daemon.HistoryPath(retentionDir(), id))
+	if err != nil {
+		t.Fatalf("read history: %v", err)
+	}
+	if !strings.Contains(string(history), cwd) {
+		t.Fatalf("history %q does not contain inherited working directory %q", history, cwd)
+	}
 }
