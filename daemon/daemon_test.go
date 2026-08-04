@@ -781,7 +781,7 @@ func TestSessionEndDeliversOutputThenCloses(t *testing.T) {
 }
 func TestAttachIgnoresUnknownClientFrames(t *testing.T) {
 	socketPath, _, errCh := startSession(t, "unknown-attach-frame", []string{
-		"sh", "-c", `IFS= read -r line; printf 'ECHO:%s\n' "$line"`,
+		"sh", "-c", `IFS= read -r line; printf 'ECHO:%s\n' "$line"; sleep 30`,
 	}, nil)
 
 	conn, err := net.Dial("unix", socketPath)
