@@ -102,7 +102,16 @@ jobs:
             chmod -R u+w "$work"
             cmake -S "$work" -B "$work/build" -DCMAKE_BUILD_TYPE=Release \
               -DGHOSTTY_VT_CROSS_TARGETS="${{ matrix.vt }}=${{ matrix.zig }}"
-            cmake --build "$work/build" --target "zig_build_lib_vt_${{ matrix.vt }}"
+            for attempt in 1 2 3; do
+              if cmake --build "$work/build" --target "zig_build_lib_vt_${{ matrix.vt }}"; then
+                break
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                exit 1
+              fi
+              echo "libghostty-vt build attempt $attempt failed; retrying" >&2
+              sleep $((attempt * 10))
+            done
           fi
           prefix="$work/build/ghostty-${{ matrix.vt }}"
           archive="$prefix/lib/libghostty-vt.a"
@@ -150,6 +159,7 @@ jobs:
         uses: golangci/golangci-lint-action@v8
         with:
           version: v2.4.0
+          install-mode: goinstall
           args: ./...
 
       # Unit tests run against the packages directly; the black-box suite runs
