@@ -2,9 +2,8 @@
 intent_links:
   - intent: "#bgx-library"
     code:
-      - main.go:rootCommand
-      - commands.go
-      - commands_test.go
+      - main.go:version
+      - internal/cli/cli.go:runner.rootCommand
       - attach.go
       - attachview.go
       - client.go
@@ -68,7 +67,7 @@ intent_links:
       - dirs.go:EnsureDirs
       - internal/cli/cli.go
       - internal/cli/cli_test.go
-      - client.go:runAction
+      - internal/cli/cli.go:runner.runAction
       - internal/cli/cli_test.go:TestRootCommandsHaveLibraryOperations
       - internal/cli/cli_test.go:TestRootCommandFlagsHaveMirroredOptionFields
   - intent: "#constraints"
@@ -83,6 +82,7 @@ intent_links:
       - cmd/bgx/main.go:main
       - internal/cli/cli_test.go:TestRootCommandsHaveLibraryOperations
       - internal/cli/cli_test.go:TestRootCommandFlagsHaveMirroredOptionFields
+      - lib_test.go:TestLibraryDependencyGraphExcludesCLIFramework
       - lib_test.go:TestPublicSurfaceHasNoCLIFrameworkTypes
       - lib_test.go:TestCLIArgvAdapterSignatureDetection
 ---

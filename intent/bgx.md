@@ -15,20 +15,20 @@ intent_links:
       - transport.go:Bridge
   - intent: "#commands"
     code:
-      - main.go:rootCommand
-      - client.go:runAction
-      - client.go:waitAction
-      - client.go:killAction
-      - client.go:historyAction
-      - client.go:sendAction
-      - client.go:infoAction
-      - client.go:listAction
-      - commands.go:attachCommand
-      - commands.go:bridgeCommand
-      - attach.go:attachAction
-      - attach.go:failSessionUnavailable
+      - internal/cli/cli.go:runner.rootCommand
+      - internal/cli/cli.go:runner.runAction
+      - internal/cli/cli.go:runner.waitAction
+      - internal/cli/cli.go:runner.killAction
+      - internal/cli/cli.go:runner.historyAction
+      - internal/cli/cli.go:runner.sendAction
+      - internal/cli/cli.go:runner.infoAction
+      - internal/cli/cli.go:runner.listAction
+      - internal/cli/cli.go:runner.attachCommand
+      - internal/cli/cli.go:runner.attachAction
+      - internal/cli/cli.go:runner.bridgeCommand
+      - internal/cli/cli.go:runner.bridgeAction
       - attach.go:transportConn
-      - bridge.go:bridgeAction
+      - transport.go:Bridge
       - client_attach.go:runTerminalAttach
       - client_attach_test.go:TestClientAttachReportsMalformedDaemonFrame
       - client_attach_test.go:TestClientAttachDisconnectClearsDetachInstructionsWithoutReset
@@ -39,14 +39,14 @@ intent_links:
       - e2e/bridge_test.go:TestAttachRejectsBothSSHAndVia
       - e2e/bridge_test.go:TestAttachSSHExpandsToTransportCommand
       - e2e/bridge_test.go:TestAttachViaReportsRemoteMissingAndEndedSessions
-      - errors.go:codeBridgeFailed
-      - commands_test.go:TestRootCommandTree
+      - internal/cli/cli_test.go:TestRootCommandsHaveLibraryOperations
       - e2e/attach_test.go:TestAttachReportsEndedAndMissingSessions
       - attachview.go:attachView
       - e2e/attach_test.go:TestAttachShowDetachInstructionsReservesLine
       - e2e/attach_test.go:TestAttachShowDetachInstructionsOneRowTerminal
       - e2e/attach_test.go:TestAttachShowDetachInstructionsSurvivesDestructiveOutput
-      - main.go:versionAction
+      - internal/cli/cli.go:runner.versionAction
+      - command_api.go:Version
   - intent: "#constraints"
     code:
       - client.go:failJSONCode
@@ -64,9 +64,10 @@ intent_links:
       - dirs.go:retentionDir
       - dirs.go:ensureDirs
       - dirs.go:fallbackNotice
-      - main.go:withDirs
-      - client.go:runAction
-      - main.go:versionAction
+      - internal/cli/cli.go:runner.withDirs
+      - internal/cli/cli.go:runner.runAction
+      - internal/cli/cli.go:runner.versionAction
+      - command_api.go:Version
       - e2e/filesystem_test.go
   - intent: "#testing--verification"
     code:

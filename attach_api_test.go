@@ -280,7 +280,7 @@ func TestAttachAPIReportsMissingAndEndedSessions(t *testing.T) {
 	}
 }
 
-func TestAttachActionRemoteMissingIgnoresLocalEndedRecord(t *testing.T) {
+func TestAttachAPIRemoteMissingIgnoresLocalEndedRecord(t *testing.T) {
 	ctx := context.Background()
 	id := "attachapi/shared-id"
 	if _, err := Run(id, []string{"true"}, RunSpec{}); err != nil {
@@ -291,24 +291,20 @@ func TestAttachActionRemoteMissingIgnoresLocalEndedRecord(t *testing.T) {
 	t.Setenv("BGX_ATTACH_ARGS_PATH", filepath.Join(t.TempDir(), "args"))
 	t.Setenv("BGX_ATTACH_ERROR_CODE", codeSessionNotFound)
 
-	var stderr bytes.Buffer
-	err := runCLI(ctx, []string{
-		"bgx",
-		"attach",
-		id,
-		"--via",
-		os.Args[0],
-		"-test.run=TestAttachAPITransportHelper",
-		"--",
-	}, &stderr)
-	if err == nil {
-		t.Fatal("attach succeeded for remote missing session")
+	err := Attach(ctx, id, AttachOptions{
+		Via: []string{
+			os.Args[0],
+			"-test.run=TestAttachAPITransportHelper",
+			"--",
+		},
+		Terminal: newAttachAPITerminal([]byte{0x1C}),
+	})
+	var notFound *SessionNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("Attach error = %T %v, want SessionNotFoundError", err, err)
 	}
-	if got := errorCode(err); got != codeSessionNotFound {
-		t.Fatalf("error code = %q, want %q; stderr=%q", got, codeSessionNotFound, stderr.String())
-	}
-	if !strings.Contains(err.Error(), "does not exist") {
-		t.Fatalf("Attach error = %q, want missing-session message", err)
+	if notFound.Operation != "attach" || notFound.ID != id {
+		t.Fatalf("SessionNotFoundError = %#v", notFound)
 	}
 }
 

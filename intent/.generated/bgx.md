@@ -18,7 +18,7 @@ intent_links:
       - daemon/daemon.go:Session
   - intent: "#attach-handoff"
     code:
-      - attach.go:attachAction
+      - attach.go:Attach
       - attach.go:startTransportProcess
       - attach.go:transportConn.Close
       - daemon/attach.go:serveAttach
@@ -61,11 +61,12 @@ intent_links:
       - dirs.go:usableDir
       - dirs.go:ensureDirs
       - dirs.go:fallbackNotice
-      - main.go:withDirs
+      - internal/cli/cli.go:runner.withDirs
   - intent: "#error-reporting"
     code:
       - errors.go
-      - main.go:main
+      - internal/cli/cli.go:runner.run
+      - cmd/bgx/main.go:main
       - client.go:failConcurrencyLimit
       - e2e/errors_test.go
   - intent: "#boundary-alignment-and-truncation-demarcation"

@@ -60,6 +60,12 @@ func stubOperations() operations {
 func TestRootCommandsHaveLibraryOperations(t *testing.T) {
 	r := newRunner(&bytes.Buffer{}, &bytes.Buffer{}, defaultOperations())
 	root := r.rootCommand()
+	if root == nil {
+		t.Fatal("rootCommand returned nil")
+	}
+	if root.Name != "bgx" {
+		t.Fatalf("root command name = %q, want %q", root.Name, "bgx")
+	}
 
 	commandNames := make([]string, 0, len(root.Commands))
 	for _, command := range root.Commands {
@@ -72,6 +78,12 @@ func TestRootCommandsHaveLibraryOperations(t *testing.T) {
 
 	wantAliases := map[string][]string{"list": {"ls"}}
 	for _, command := range root.Commands {
+		if command.Hidden {
+			t.Errorf("CLI command %q is hidden", command.Name)
+		}
+		if command.Action == nil {
+			t.Errorf("CLI command %q has a nil action", command.Name)
+		}
 		if !reflect.DeepEqual(command.Aliases, wantAliases[command.Name]) {
 			t.Errorf("CLI command %q aliases = %v, want %v", command.Name, command.Aliases, wantAliases[command.Name])
 		}
@@ -597,4 +609,65 @@ func cliOptionName(fieldName string) string {
 		name.WriteRune(unicode.ToLower(r))
 	}
 	return name.String()
+}
+
+type failingJSONWriter struct {
+	err error
+}
+
+func (w failingJSONWriter) Write([]byte) (int, error) {
+	return 0, w.err
+}
+
+func TestRootCommandReturnsIndependentInstances(t *testing.T) {
+	r := newRunner(&bytes.Buffer{}, &bytes.Buffer{}, stubOperations())
+	if r.rootCommand() == r.rootCommand() {
+		t.Fatal("rootCommand returned the same mutable command instance twice")
+	}
+}
+
+func TestEmitErrorJSONReturnsWriteError(t *testing.T) {
+	writeErr := errors.New("write stderr")
+	err := emitErrorJSON(failingJSONWriter{err: writeErr}, codeInternal, "failed", nil)
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("emitErrorJSON error = %v, want write error", err)
+	}
+}
+
+func TestRunPropagatesErrorJSONWriteFailure(t *testing.T) {
+	writeErr := errors.New("write stderr")
+	err := newRunner(io.Discard, failingJSONWriter{err: writeErr}, stubOperations()).run(
+		context.Background(),
+		[]string{"bgx", "--definitely-not-a-flag"},
+	)
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("run error = %v, want JSON write error", err)
+	}
+}
+
+func TestUnknownCommandReturnsCodedError(t *testing.T) {
+	var stderr bytes.Buffer
+	err := newRunner(io.Discard, &stderr, stubOperations()).run(
+		context.Background(),
+		[]string{"bgx", "bogus-command"},
+	)
+	if err == nil {
+		t.Fatal("run returned nil for unknown command")
+	}
+	if !strings.Contains(err.Error(), "unknown command") {
+		t.Fatalf("run error = %q, want unknown-command message", err)
+	}
+
+	var coded *codedError
+	if !errors.As(err, &coded) {
+		t.Fatalf("run error = %T %v, want codedError", err, err)
+	}
+	if coded.code != codeInvalidArgument {
+		t.Fatalf("error code = %q, want %q", coded.code, codeInvalidArgument)
+	}
+
+	payload := decodeObject(t, stderr.Bytes())
+	if payload["code"] != codeInvalidArgument {
+		t.Fatalf("JSON error code = %v, want %q", payload["code"], codeInvalidArgument)
+	}
 }

@@ -5,12 +5,25 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
 )
 
 const cliImportPath = "github.com/urfave/cli/v3"
+
+func TestLibraryDependencyGraphExcludesCLIFramework(t *testing.T) {
+	output, err := exec.Command("go", "list", "-deps", ".").CombinedOutput()
+	if err != nil {
+		t.Fatalf("list library dependencies: %v\n%s", err, output)
+	}
+	for _, dependency := range strings.Fields(string(output)) {
+		if dependency == cliImportPath {
+			t.Errorf("library transitively depends on %s", cliImportPath)
+		}
+	}
+}
 
 // TestPublicSurfaceHasNoCLIFrameworkTypes guards the typed-library-only
 // contract: no exported declaration in the root package may mention a

@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/sidedotdev/bgx/daemon"
-	cli "github.com/urfave/cli/v3"
 )
 
 // maxSocketPathLen is a conservative cap on a unix domain socket path length.
@@ -39,13 +38,6 @@ const defaultConcurrency = 3
 // id into a single safe filename component.
 func socketPath(id string) string {
 	return filepath.Join(socketDir(), url.QueryEscape(id)+".sock")
-}
-
-// infoResult is the JSON shape emitted by the info command: an existence flag
-// plus, when present, the session's full metadata snapshot.
-type infoResult struct {
-	Exists bool `json:"exists"`
-	*daemon.Info
 }
 
 // dialRequest sends a single JSON-line request to a session's socket and
@@ -95,65 +87,6 @@ func endedRecord(id string) (*daemon.Info, bool) {
 		return nil, false
 	}
 	return &info, true
-}
-
-func runAction(ctx context.Context, cmd *cli.Command) error {
-	args := cmd.Args().Slice()
-	if len(args) == 0 {
-		return failJSON(codeInvalidArgument, "run: an id is required")
-	}
-	id, command := args[0], args[1:]
-	if id == "" {
-		return failJSON(codeInvalidArgument, "run: id must not be empty")
-	}
-	if len(command) == 0 {
-		return failJSON(codeInvalidArgument, "run: a command is required")
-	}
-	metadata, err := parseMetadata(cmd.StringSlice("metadata"))
-	if err != nil {
-		return failJSON(codeInvalidArgument, "run: %v", err)
-	}
-	if len(socketPath(id)) > maxSocketPathLen {
-		return failJSON(codeInvalidArgument, "run: socket path for id %q exceeds %d bytes", id, maxSocketPathLen)
-	}
-
-	info, err := Start(ctx, id, command, RunSpec{
-		OverwriteID: cmd.Bool("overwrite-id"),
-		Metadata:    metadata,
-		HeadSize:    cmd.Int("head-size"),
-		TailSize:    cmd.Int("tail-size"),
-		Storage:     cmd.String("storage"),
-		StoragePath: cmd.String("storage-path"),
-		Retention:   cmd.Int("retention"),
-		Concurrency: cmd.Int("concurrency"),
-	}.startOptions())
-	if err != nil {
-		var climit *ConcurrencyLimitError
-		var startup *StartupError
-		switch {
-		case errors.Is(err, ErrSessionRunning):
-			return failJSON(codeAlreadyExists, "run: session %q is already running", id)
-		case errors.Is(err, ErrSessionExists):
-			return failJSON(codeAlreadyExists, "run: session %q already exists; pass --overwrite-id to replace it", id)
-		case errors.As(err, &climit):
-			return failConcurrencyLimit(climit.Namespace, climit.Limit, climit.Active)
-		case errors.As(err, &startup):
-			return failJSON(codeStartupFailed, "run: %v", err)
-		default:
-			return failJSON(codeInternal, "run: %v", err)
-		}
-	}
-	result := map[string]any{
-		"id":         info.ID,
-		"pid":        info.Pid,
-		"started_at": info.StartedAt,
-	}
-	if notice := fallbackNotice(); notice != "" {
-		result["fallback"] = notice
-		result["socket_dir"] = socketDir()
-		result["retention_dir"] = retentionDir()
-	}
-	return printJSON(os.Stdout, result)
 }
 
 // spawnDaemon re-execs the current executable with the private daemon-config
@@ -294,118 +227,6 @@ func firstStderrLine(path string) string {
 	return ""
 }
 
-func infoAction(ctx context.Context, cmd *cli.Command) error {
-	id := cmd.Args().First()
-	if id == "" {
-		return failJSON(codeInvalidArgument, "info: an id is required")
-	}
-	if info, err := sessionClient(id).Info(ctx); err == nil {
-		return printJSON(os.Stdout, infoResult{Exists: true, Info: info})
-	}
-	if info, ok := EndedRecord(id); ok {
-		return printJSON(os.Stdout, infoResult{Exists: true, Info: info})
-	}
-	return printJSON(os.Stdout, map[string]any{"id": id, "exists": false})
-}
-
-func waitAction(ctx context.Context, cmd *cli.Command) error {
-	id := cmd.Args().First()
-	if id == "" {
-		return failJSON(codeInvalidArgument, "wait: an id is required")
-	}
-	if res, err := sessionClient(id).Wait(ctx); err == nil {
-		return emitExit(id, res.ExitCode)
-	}
-	if info, ok := EndedRecord(id); ok && info.ExitCode != nil {
-		return emitExit(id, *info.ExitCode)
-	}
-	// A daemon shutting down closes its listener before persisting its record,
-	// so a dial can fail while the record is still in flight. A lingering socket
-	// file marks that teardown; give the record a bounded window to appear
-	// before concluding the session is unknown.
-	if _, err := os.Stat(socketPath(id)); err == nil {
-		if info, ok := recheckEndedRecord(id, 2*time.Second); ok && info.ExitCode != nil {
-			return emitExit(id, *info.ExitCode)
-		}
-	}
-	return failJSON(codeNotFound, "wait: session %q not found", id)
-}
-
-// emitExit prints the session's exit code as JSON and mirrors it as the bgx
-// process exit status.
-func emitExit(id string, code int) error {
-	if err := printJSON(os.Stdout, map[string]any{"id": id, "exit_code": code}); err != nil {
-		return err
-	}
-	os.Exit(code)
-	return nil
-}
-
-func killAction(ctx context.Context, cmd *cli.Command) error {
-	id := cmd.Args().First()
-	if id == "" {
-		return failJSON(codeInvalidArgument, "kill: an id is required")
-	}
-	if res, err := sessionClient(id).Kill(ctx); err == nil {
-		return printJSON(os.Stdout, infoResult{Exists: true, Info: res.Info})
-	}
-	if info, ok := EndedRecord(id); ok {
-		return printJSON(os.Stdout, infoResult{Exists: true, Info: info})
-	}
-	return failJSON(codeNotFound, "kill: session %q not found", id)
-}
-
-// sendAction joins the trailing arguments with single spaces and writes exactly
-// those raw bytes to the session PTY, with no trailing newline; callers send any
-// terminators (e.g. a carriage return) themselves.
-func sendAction(ctx context.Context, cmd *cli.Command) error {
-	args := cmd.Args().Slice()
-	if len(args) == 0 {
-		return failJSON(codeInvalidArgument, "send: an id is required")
-	}
-	id, text := args[0], args[1:]
-	if id == "" {
-		return failJSON(codeInvalidArgument, "send: id must not be empty")
-	}
-	err := sessionClient(id).Send(ctx, []byte(strings.Join(text, " ")))
-	var respErr *ResponseError
-	switch {
-	case err == nil:
-		return printJSON(os.Stdout, map[string]any{"id": id, "sent": true})
-	case errors.As(err, &respErr):
-		return failJSON(codeInternal, "send: %s", respErr.Message)
-	default:
-		return failJSON(codeNotFound, "send: session %q not found", id)
-	}
-}
-
-// historyAction writes the raw head+tail scrollback bytes to stdout, querying a
-// live daemon first and falling back to the persisted history of an ended
-// session. Its output is intentionally not JSON.
-func historyAction(ctx context.Context, cmd *cli.Command) error {
-	id := cmd.Args().First()
-	if id == "" {
-		return failJSON(codeInvalidArgument, "history: an id is required")
-	}
-	if data, err := sessionClient(id).History(ctx); err == nil {
-		_, werr := os.Stdout.Write(data)
-		return werr
-	}
-	if data, err := os.ReadFile(daemon.HistoryPath(retentionDir(), id)); err == nil {
-		_, werr := os.Stdout.Write(data)
-		return werr
-	}
-	return failJSON(codeNotFound, "history: session %q not found", id)
-}
-
-func listAction(_ context.Context, cmd *cli.Command) error {
-	filters, err := parseMetadata(cmd.StringSlice("metadata"))
-	if err != nil {
-		return failJSON(codeInvalidArgument, "list: %v", err)
-	}
-	return printJSON(os.Stdout, ListSessions(ListOptions{Metadata: filters}))
-}
-
 // lockNamespace takes an exclusive advisory lock that serializes run's
 // concurrency check and daemon spawn within a single id namespace, so
 // concurrent run invocations cannot race past the configured cap. The returned
@@ -454,22 +275,6 @@ func runningInNamespace(ns string) []*daemon.Info {
 		}
 	}
 	return out
-}
-
-// failConcurrencyLimit reports that a namespace is already at its active-session
-// limit, including every offending session so callers can act on the listing.
-func failConcurrencyLimit(ns string, limit int, sessions []*daemon.Info) error {
-	label := fmt.Sprintf("namespace %q", ns)
-	if ns == "" {
-		label = "the global namespace"
-	}
-	err := fmt.Errorf("run: %s already has %d active session(s); concurrency limit is %d",
-		label, len(sessions), limit)
-	return &codedError{
-		code:    codeConcurrencyLimit,
-		err:     err,
-		payload: map[string]any{"sessions": sessions},
-	}
 }
 
 // listRunning queries every live session socket, cleaning up sockets that no

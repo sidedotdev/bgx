@@ -17,8 +17,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	cli "github.com/urfave/cli/v3"
 )
 
 // AttachOptions configures an interactive attachment.
@@ -134,81 +132,6 @@ func Attach(ctx context.Context, id string, opts AttachOptions) error {
 		}
 	}
 	return err
-}
-
-// attachAction connects to a running session, replays its current screen, and
-// bridges the local terminal to the session's PTY until the user detaches with
-// ctrl+\ (which keeps the session running). With --ssh or --via the session is
-// remote: a transport subprocess running `bgx bridge <id>` on the far side
-// stands in for the local socket connection.
-func attachAction(ctx context.Context, cmd *cli.Command) error {
-	id := cmd.Args().First()
-	if id == "" {
-		return failJSON(codeInvalidArgument, "attach: an id is required")
-	}
-	opts := AttachOptions{
-		ShowDetachInstructions: cmd.Bool("show-detach-instructions"),
-		SSH:                    cmd.String("ssh"),
-	}
-	// Argument parsing stops at the id so --via can consume every following
-	// argument as the transport command; the other flags stay usable on either
-	// side of the id.
-	rest := cmd.Args().Slice()[1:]
-	for i := 0; i < len(rest); i++ {
-		switch rest[i] {
-		case "--show-detach-instructions":
-			opts.ShowDetachInstructions = true
-		case "--ssh":
-			if i == len(rest)-1 {
-				return failJSON(codeInvalidArgument, "attach: --ssh requires a host")
-			}
-			i++
-			opts.SSH = rest[i]
-		case "--via":
-			if i == len(rest)-1 {
-				return failJSON(codeInvalidArgument, "attach: --via requires a command")
-			}
-			opts.Via = rest[i+1:]
-			i = len(rest)
-		default:
-			return failJSON(codeInvalidArgument, "attach: unexpected argument %q", rest[i])
-		}
-	}
-
-	err := Attach(ctx, id, opts)
-	if err == nil {
-		return nil
-	}
-	var optionsErr *AttachOptionsError
-	if errors.As(err, &optionsErr) {
-		return failJSON(codeInvalidArgument, "%v", optionsErr)
-	}
-	var notFound *SessionNotFoundError
-	if errors.As(err, &notFound) {
-		return failJSON(codeSessionNotFound, "attach: session %q does not exist", id)
-	}
-	var ended *SessionEndedError
-	if errors.As(err, &ended) {
-		return failJSON(codeSessionEnded, "attach: session %q has already ended", id)
-	}
-	var respErr *ResponseError
-	if errors.As(err, &respErr) {
-		return failJSON(codeAttachFailed, "attach: %s", respErr.Message)
-	}
-	return failJSON(codeAttachFailed, "attach: %v", err)
-}
-
-// failSessionUnavailable reports the distinct reason a session cannot be
-// attached or bridged to: it either already ended (a daemon answered as not
-// running, or a persisted ended record exists) or it never existed.
-func failSessionUnavailable(op, id string, knownEnded bool) error {
-	if knownEnded {
-		return failJSON(codeSessionEnded, "%s: session %q has already ended", op, id)
-	}
-	if _, ended := endedRecord(id); ended {
-		return failJSON(codeSessionEnded, "%s: session %q has already ended", op, id)
-	}
-	return failJSON(codeSessionNotFound, "%s: session %q does not exist", op, id)
 }
 
 // transportShutdownGrace bounds how long a transport subprocess may take to
