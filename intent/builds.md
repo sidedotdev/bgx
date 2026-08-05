@@ -36,6 +36,7 @@ directory, enabling grep debugging.
 - Native runners are used rather than cross-compilation.
 - Native dependencies in release artifacts must target the supported
   architecture baseline rather than optional CPU features of the build runner.
+- No zig toolchain: ehsanul/libghostty-vt-static bundles the static lib
 - All dependencies/actions/etc are pre-cached to the extent possible
 - Platforms supported:
   - linux amd64
@@ -44,8 +45,6 @@ directory, enabling grep debugging.
   - darwin arm64
 - On each platform:
   - Runs unit tests & lints
-  - If version changed for libghostty-vt, compiles and commits the static lib to
-    the repository on `main`
   - Creates static builds of the cli tool
   - Runs full suite of black-box tests on static build
   - Uploads the build to the release

@@ -258,6 +258,6 @@ exercises all potential scenarios to discover race conditions automatically
 
 ## Implementation
 
-Uses adrg/xdg, urfave/cli/v3 and libghostty-vt (or go bindings to it). Other
+Uses adrg/xdg, urfave/cli/v3 and ehsanul/libghostty-vt-static. Other
 dependencies are limited to those required for robustness/correctness and to
 support multiple platforms effectively.
