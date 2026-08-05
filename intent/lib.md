@@ -143,3 +143,5 @@ res, err := bgx.Wait(ctx, id)
   the library does not expose. This is not necessarily true vice versa.
 - The cli itself is NOT exposed via the library, e.g. we do not want the library
   to expose a way to run the top-level cli command action.
+- The lib does not depend on urfave/cli, so bgx consumers don't transitively
+  depend on it
