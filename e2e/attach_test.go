@@ -852,3 +852,61 @@ func TestAttachReportsEndedAndMissingSessions(t *testing.T) {
 		t.Fatalf("ended session error = %q, want mention of having ended", msg)
 	}
 }
+
+// TestAttachInteractiveShellCommands verifies that an attached shell remains
+// interactive across commands sent over time, including while a command is
+// running without producing output.
+func TestAttachInteractiveShellCommands(t *testing.T) {
+	dir := runDir(t)
+
+	const id = "interactive-shell"
+	if res := bgxIn(t, dir, "run", id, "sh", "-c", "printf 'ATTACH-SHELL-READY\n'; PS1='shell> '; export PS1; exec sh"); res.exitCode != 0 {
+		t.Fatalf("run exit = %d, stderr=%q", res.exitCode, res.stderr)
+	}
+	t.Cleanup(func() { bgxIn(t, dir, "kill", id) })
+
+	const (
+		cols = 80
+		rows = 10
+	)
+	c := startAttachE2EClient(t, dir, id, &pty.Winsize{Rows: rows, Cols: cols})
+	defer closePTY(t, c.ptmx)
+	c.waitFor(t, "ATTACH-SHELL-READY")
+
+	if _, err := c.ptmx.Write([]byte("printf '\\033[2J\\033[H'; word=hello; echo \"$word world\"\n")); err != nil {
+		t.Fatalf("write first command: %v", err)
+	}
+	c.waitFor(t, "hello world")
+
+	time.Sleep(time.Second)
+	sleepStarted := time.Now()
+	if _, err := c.ptmx.Write([]byte("sleep 1; word=\"$word again\"; echo \"$word\"\n")); err != nil {
+		t.Fatalf("write second command: %v", err)
+	}
+	c.waitFor(t, "hello again")
+	if elapsed := time.Since(sleepStarted); elapsed < 900*time.Millisecond {
+		t.Fatalf("sleeping command completed after %v, want at least 900ms", elapsed)
+	}
+
+	time.Sleep(time.Second)
+	if _, err := c.ptmx.Write([]byte("word=\"$word from attach\"; printf '<%s>\\n' \"$word\"\n")); err != nil {
+		t.Fatalf("write third command: %v", err)
+	}
+	c.waitFor(t, "<hello again from attach>")
+	time.Sleep(300 * time.Millisecond)
+
+	rendered := strings.Join(renderScreen(t, c.output(), cols, rows), "\n")
+	want := strings.Join([]string{
+		"hello world",
+		"shell> sleep 1; word=\"$word again\"; echo \"$word\"",
+		"hello again",
+		"shell> word=\"$word from attach\"; printf '<%s>\\n' \"$word\"",
+		"<hello again from attach>",
+		"shell> ",
+	}, "\n")
+	if rendered != want {
+		t.Fatalf("rendered terminal state:\n%q\nwant:\n%q", rendered, want)
+	}
+
+	c.detach(t)
+}
