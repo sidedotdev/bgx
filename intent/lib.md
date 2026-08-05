@@ -145,3 +145,10 @@ res, err := bgx.Wait(ctx, id)
   to expose a way to run the top-level cli command action.
 - The lib does not depend on urfave/cli, so bgx consumers don't transitively
   depend on it
+- Downstream lib dependents need not have a zig toolchain, CGO suffices
+
+## Requirements
+
+- The precompiled libghostty-vt static lib is checked into the repo, allowing it
+  to be bundled with the bgx library via `${SRCDIR}` across all supported
+  [release targets](./builds.md).

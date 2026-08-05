@@ -44,6 +44,8 @@ directory, enabling grep debugging.
   - darwin arm64
 - On each platform:
   - Runs unit tests & lints
+  - If version changed for libghostty-vt, compiles and commits the static lib to
+    the repository on `main`
   - Creates static builds of the cli tool
   - Runs full suite of black-box tests on static build
   - Uploads the build to the release
