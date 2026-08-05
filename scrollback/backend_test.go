@@ -181,3 +181,79 @@ func TestNewUnknownStorageKind(t *testing.T) {
 		t.Fatal("expected error for unknown storage kind")
 	}
 }
+
+func FuzzMemoryAndDiskStoresAgree(f *testing.F) {
+	f.Add([]byte{}, uint16(1), uint16(1), uint16(1), uint16(1), uint8(1), uint8(1))
+	f.Add(pattern(257), uint16(17), uint16(31), uint16(47), uint16(29), uint8(3), uint8(2))
+	f.Add(append([]byte("\x1b[31m"), pattern(4096)...), uint16(511), uint16(127), uint16(1023), uint16(257), uint8(7), uint8(3))
+	f.Add([]byte("αβγ\x1b[2Jtail"), uint16(2), uint16(5), uint16(7), uint16(3), uint8(2), uint8(4))
+
+	f.Fuzz(func(t *testing.T, data []byte, rawWriteSize, rawHeadSize, rawTailSize, rawChunkSize uint16, rawSnapshotEvery, rawSnapshotRepeats uint8) {
+		if len(data) > 16<<10 {
+			t.Skip()
+		}
+		writeSize := int(rawWriteSize%1024) + 1
+		headSize := int(rawHeadSize%2048) + 1
+		tailSize := int(rawTailSize%4096) + 1
+		chunkSize := int(rawChunkSize%1024) + 1
+		snapshotEvery := int(rawSnapshotEvery%16) + 1
+		snapshotRepeats := int(rawSnapshotRepeats%4) + 1
+
+		diskBase := t.TempDir()
+		diskBackend, err := newDiskBackend(diskBase)
+		if err != nil {
+			t.Fatalf("new disk backend: %v", err)
+		}
+		diskDir := diskBackend.dir
+		memoryStore := newStoreBackend(headSize, tailSize, chunkSize, 1<<20, memoryBackend{})
+		diskStore := newStoreBackend(headSize, tailSize, chunkSize, 1<<20, diskBackend)
+
+		for offset, writeIndex := 0, 0; offset < len(data); writeIndex++ {
+			end := offset + writeSize
+			if end > len(data) {
+				end = len(data)
+			}
+			memoryN, memoryErr := memoryStore.Write(data[offset:end])
+			diskN, diskErr := diskStore.Write(data[offset:end])
+			if memoryN != diskN || memoryN != end-offset {
+				t.Fatalf("write counts differ: memory=%d disk=%d want=%d", memoryN, diskN, end-offset)
+			}
+			if (memoryErr == nil) != (diskErr == nil) {
+				t.Fatalf("write errors differ: memory=%v disk=%v", memoryErr, diskErr)
+			}
+			if memoryErr != nil && memoryErr.Error() != diskErr.Error() {
+				t.Fatalf("write errors differ: memory=%v disk=%v", memoryErr, diskErr)
+			}
+			offset = end
+
+			if writeIndex%snapshotEvery == 0 {
+				if memory, disk := memoryStore.Snapshot(), diskStore.Snapshot(); !bytes.Equal(memory, disk) {
+					t.Fatalf("intermediate snapshots differ after %d bytes: memory=%d disk=%d", offset, len(memory), len(disk))
+				}
+			}
+		}
+
+		for i := 0; i < snapshotRepeats; i++ {
+			memory, disk := memoryStore.Snapshot(), diskStore.Snapshot()
+			if !bytes.Equal(memory, disk) {
+				t.Fatalf("snapshot %d differs: memory=%d disk=%d", i, len(memory), len(disk))
+			}
+			if memoryStore.TotalBytes() != diskStore.TotalBytes() || memoryStore.TotalBytes() != int64(len(data)) {
+				t.Fatalf("byte counts differ: memory=%d disk=%d want=%d",
+					memoryStore.TotalBytes(), diskStore.TotalBytes(), len(data))
+			}
+			if (memoryStore.Err() == nil) != (diskStore.Err() == nil) {
+				t.Fatalf("store errors differ: memory=%v disk=%v", memoryStore.Err(), diskStore.Err())
+			}
+		}
+
+		memoryCloseErr := memoryStore.Close()
+		diskCloseErr := diskStore.Close()
+		if (memoryCloseErr == nil) != (diskCloseErr == nil) {
+			t.Fatalf("close errors differ: memory=%v disk=%v", memoryCloseErr, diskCloseErr)
+		}
+		if _, err := os.Stat(diskDir); !os.IsNotExist(err) {
+			t.Fatalf("disk backend directory remains after close: %v", err)
+		}
+	})
+}

@@ -58,7 +58,8 @@ func HistoryPath(retentionDir, id string) string {
 }
 
 // writeRecord persists info as JSON and the raw history bytes for an ended
-// session, creating the namespace directory as needed.
+// session, creating the namespace directory as needed. The record is published
+// last so its presence guarantees the corresponding history is available.
 func writeRecord(retentionDir string, info *Info, history []byte) error {
 	dir := namespaceDir(retentionDir, info.ID)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -68,10 +69,10 @@ func writeRecord(retentionDir string, info *Info, history []byte) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(RecordPath(retentionDir, info.ID), data, 0o600); err != nil {
+	if err := os.WriteFile(HistoryPath(retentionDir, info.ID), history, 0o600); err != nil {
 		return err
 	}
-	return os.WriteFile(HistoryPath(retentionDir, info.ID), history, 0o600)
+	return os.WriteFile(RecordPath(retentionDir, info.ID), data, 0o600)
 }
 
 // pruneRetention keeps only the newest keep ended-session records (and their

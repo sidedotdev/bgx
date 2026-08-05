@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sidedotdev/bgx/daemon"
 )
 
 // runDir creates a short-lived directory under /tmp used as both the XDG
@@ -345,37 +347,137 @@ func TestRunConcurrentInvocationsRespectLimit(t *testing.T) {
 	}
 }
 
-// FuzzRunShortLivedSessionExitCode exercises the timing boundary where a
-// session's command exits almost immediately after spawn, so the daemon's
-// Wait() can win the race against its persisted ended record becoming
-// observable to the client. Across the whole spread of tiny delays, run must
-// never spuriously report a startup failure for a session that is in fact
-// valid, and the session's true exit code must remain observable afterwards.
-func FuzzRunShortLivedSessionExitCode(f *testing.F) {
-	for _, seed := range []int{0, 1, 3, 7, 15, 31, 60} {
-		f.Add(seed)
-	}
-	f.Fuzz(func(t *testing.T, delayMS int) {
-		if delayMS < 0 || delayMS > 200 {
-			t.Skip()
+// FuzzEndedSessionPersistence varies session timing, retained output, exit
+// status, and namespace shape while requiring every observable representation
+// of an ended session to describe the same complete lifecycle.
+func FuzzEndedSessionPersistence(f *testing.F) {
+	f.Add(uint16(0), uint32(0), uint32(0), uint8(0), false, uint8(0), uint8(0))
+	f.Add(uint16(1), uint32(64), uint32(32), uint8(3), true, uint8(1), uint8(2))
+	f.Add(uint16(31), uint32(65537), uint32(32769), uint8(125), true, uint8(25), uint8(25))
+	f.Add(uint16(195), uint32(1<<20), uint32((1<<19)+1), uint8(3), false, uint8(7), uint8(19))
+
+	f.Fuzz(func(t *testing.T, rawDelayMS uint16, rawOutputSize, rawSplit uint32, rawExitCode uint8, namespaced bool, rawFirst, rawSecond uint8) {
+		delayMS := int(rawDelayMS % 201)
+		outputSize := int(rawOutputSize % ((1 << 20) + 1))
+		split := int(rawSplit % uint32(outputSize+1))
+		exitCode := int(rawExitCode % 126)
+		firstByte := byte('a' + rawFirst%26)
+		secondByte := byte('A' + rawSecond%26)
+		id := "fuzz"
+		if namespaced {
+			id = "fuzz/session"
 		}
+
 		dir := runDir(t)
-		script := fmt.Sprintf("sleep %s; exit 3", strconv.FormatFloat(float64(delayMS)/1000, 'f', -1, 64))
-		res := bgxIn(t, dir, "run", "fuzz", "sh", "-c", script)
+		retentionDir := filepath.Join(dir, "bgx", "ended")
+		recordPath := daemon.RecordPath(retentionDir, id)
+		historyPath := daemon.HistoryPath(retentionDir, id)
+		type persistedSession struct {
+			info    daemon.Info
+			history []byte
+			err     error
+		}
+		persisted := make(chan persistedSession, 1)
+		stopObserver := make(chan struct{})
+		defer close(stopObserver)
+		go func() {
+			for {
+				data, err := os.ReadFile(recordPath)
+				if err == nil {
+					var info daemon.Info
+					if json.Unmarshal(data, &info) == nil {
+						history, historyErr := os.ReadFile(historyPath)
+						persisted <- persistedSession{info: info, history: history, err: historyErr}
+						return
+					}
+				} else if !os.IsNotExist(err) {
+					persisted <- persistedSession{err: fmt.Errorf("read ended record: %w", err)}
+					return
+				}
+				select {
+				case <-stopObserver:
+					return
+				default:
+				}
+			}
+		}()
+
+		var outputCommands []string
+		if split > 0 {
+			outputCommands = append(outputCommands,
+				fmt.Sprintf("dd if=/dev/zero bs=%d count=1 2>/dev/null | LC_ALL=C tr '\\0' %c", split, firstByte))
+		}
+		if remaining := outputSize - split; remaining > 0 {
+			outputCommands = append(outputCommands,
+				fmt.Sprintf("dd if=/dev/zero bs=%d count=1 2>/dev/null | LC_ALL=C tr '\\0' %c", remaining, secondByte))
+		}
+		outputCommand := strings.Join(outputCommands, "; ")
+		if outputCommand == "" {
+			outputCommand = ":"
+		}
+		delay := strconv.FormatFloat(float64(delayMS)/1000, 'f', -1, 64)
+		script := fmt.Sprintf("%s; sleep %s; exit %d", outputCommand, delay, exitCode)
+		res := bgxIn(t, dir, "run", id, "sh", "-c", script)
 		if res.exitCode != 0 {
-			t.Fatalf("run exit code = %d (delay %dms), want 0; stdout=%q stderr=%q", res.exitCode, delayMS, res.stdout, res.stderr)
+			t.Fatalf("run exit code = %d, want 0; delay=%dms output=%d command_exit=%d namespace=%t stdout=%q stderr=%q",
+				res.exitCode, delayMS, outputSize, exitCode, namespaced, res.stdout, res.stderr)
 		}
 		started := decodeJSON(t, res.stdout)
 		if errMsg, ok := started["error"].(string); ok {
-			t.Fatalf("run reported error %q for a valid short-lived session (delay %dms)", errMsg, delayMS)
+			t.Fatalf("run reported error %q; delay=%dms output=%d command_exit=%d namespace=%t",
+				errMsg, delayMS, outputSize, exitCode, namespaced)
 		}
-		if started["id"] != "fuzz" {
-			t.Fatalf("run id = %v (delay %dms), want fuzz", started["id"], delayMS)
+		if started["id"] != id {
+			t.Fatalf("run id = %v, want %s", started["id"], id)
 		}
 
-		m := waitEnded(t, dir, "fuzz")
-		if m["exit_code"] != float64(3) {
-			t.Fatalf("ended exit_code = %v (delay %dms), want 3", m["exit_code"], delayMS)
+		var stored persistedSession
+		select {
+		case stored = <-persisted:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("ended session was not persisted; delay=%dms output=%d command_exit=%d namespace=%t",
+				delayMS, outputSize, exitCode, namespaced)
+		}
+		if stored.err != nil {
+			t.Fatalf("persisted session artifacts are inconsistent: %v; delay=%dms output=%d command_exit=%d namespace=%t",
+				stored.err, delayMS, outputSize, exitCode, namespaced)
+		}
+
+		expectedHistory := bytes.Repeat([]byte{firstByte}, split)
+		expectedHistory = append(expectedHistory, bytes.Repeat([]byte{secondByte}, outputSize-split)...)
+		if stored.info.ID != id {
+			t.Errorf("persisted id = %q, want %q", stored.info.ID, id)
+		}
+		if stored.info.Running {
+			t.Error("persisted session is still marked running")
+		}
+		if stored.info.EndedAt == nil {
+			t.Error("persisted session has no ended_at")
+		}
+		if stored.info.ExitCode == nil || *stored.info.ExitCode != exitCode {
+			t.Errorf("persisted exit_code = %v, want %d", stored.info.ExitCode, exitCode)
+		}
+		if stored.info.OutputBytes != int64(outputSize) {
+			t.Errorf("persisted output_bytes = %d, want %d", stored.info.OutputBytes, outputSize)
+		}
+		if !bytes.Equal(stored.history, expectedHistory) {
+			t.Errorf("persisted history length/content mismatch: got %d bytes, want %d", len(stored.history), len(expectedHistory))
+		}
+
+		info := waitEnded(t, dir, id)
+		if info["id"] != id || info["running"] != false || info["exit_code"] != float64(exitCode) {
+			t.Errorf("CLI info disagrees with persisted lifecycle: %v", info)
+		}
+		if info["output_bytes"] != float64(stored.info.OutputBytes) {
+			t.Errorf("CLI output_bytes = %v, persisted output_bytes = %d", info["output_bytes"], stored.info.OutputBytes)
+		}
+
+		history := bgxIn(t, dir, "history", id)
+		if history.exitCode != 0 {
+			t.Fatalf("history exit code = %d; stderr=%q", history.exitCode, history.stderr)
+		}
+		if !bytes.Equal([]byte(history.stdout), stored.history) {
+			t.Errorf("CLI history disagrees with persisted history: got %d bytes, want %d", len(history.stdout), len(stored.history))
 		}
 	})
 }

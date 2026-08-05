@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"os"
 	"testing"
 )
 
@@ -51,5 +52,21 @@ func TestRetentionPathsSeparateNamespaces(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(global), []byte(globalNamespaceDir)) {
 		t.Fatalf("global id not under global namespace dir: %q", global)
+	}
+}
+
+func TestWriteRecordPublishesRecordAfterHistory(t *testing.T) {
+	retentionDir := t.TempDir()
+	info := &Info{ID: "publish/order"}
+	historyPath := HistoryPath(retentionDir, info.ID)
+	if err := os.MkdirAll(historyPath, 0o700); err != nil {
+		t.Fatalf("create blocking history directory: %v", err)
+	}
+
+	if err := writeRecord(retentionDir, info, []byte("history")); err == nil {
+		t.Fatal("writeRecord succeeded with a directory at the history path")
+	}
+	if _, err := os.Stat(RecordPath(retentionDir, info.ID)); !os.IsNotExist(err) {
+		t.Fatalf("record was published before history: %v", err)
 	}
 }
