@@ -4,8 +4,8 @@
 // snapshot of the current terminal state (contents, styles, and cursor) to
 // replay, then continue streaming raw output.
 //
-// It wraps the cgo-backed go.mitchellh.com/libghostty bindings, which link the
-// native libghostty-vt-static library via pkg-config.
+// It wraps the cgo-backed libghostty-vt-static bindings, which bundle native
+// static libraries for the supported platforms.
 //
 // DumpScreen ports the terminal-state serialization approach from zmx
 // (https://github.com/neurosnap/zmx); see LICENSE-zmx for its license.
@@ -14,7 +14,7 @@ package vt
 import (
 	"sync"
 
-	lg "go.mitchellh.com/libghostty"
+	lg "github.com/ehsanul/libghostty-vt-static"
 )
 
 const (

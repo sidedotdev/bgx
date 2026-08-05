@@ -22,138 +22,23 @@ jobs:
           - runner: ubuntu-24.04
             goos: linux
             goarch: amd64
-            vt: linux-amd64
-            zig: x86_64-linux-gnu
           - runner: ubuntu-24.04-arm
             goos: linux
             goarch: arm64
-            vt: linux-arm64
-            zig: aarch64-linux-gnu
           - runner: macos-14
             goos: darwin
             goarch: arm64
-            vt: macos-arm64
-            zig: aarch64-macos
           - runner: macos-15-intel
             goos: darwin
             goarch: amd64
-            vt: macos-amd64
-            zig: x86_64-macos
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          # Do not restore go's build cache across runs. cgo resolves the
-          # libghostty archive path via pkg-config at build time, but go's cache
-          # key does not include PKG_CONFIG_PATH, so a package compiled against a
-          # stale .pc (pointing at zig's default zig-out layout) would be reused
-          # even after the .pc is corrected, breaking the link nondeterministically.
-          cache: false
-
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.15.2
-          # Do not restore zig's global build cache across runs. A cache from a
-          # different libghostty build layout carries over pkg-config content
-          # that bakes zig's default install prefix, so a reused cache makes the
-          # generated .pc point at a static archive path that does not exist.
-          use-cache: false
-
-      - uses: lukka/get-cmake@latest
-
-      - name: install pkg-config
-        shell: bash
-        run: |
-          case "${{ runner.os }}" in
-            Linux) sudo apt-get update && sudo apt-get install -y pkg-config ;;
-            macOS) brew list pkg-config >/dev/null 2>&1 || brew install pkg-config ;;
-          esac
-
-      # libghostty-vt is a cgo dependency linked statically via pkg-config. It is
-      # not distributed as a package, so build it from source here: CMake fetches
-      # the pinned ghostty tree and drives zig. The build is expensive, so its
-      # output is cached keyed on go.sum, which pins the libghostty version.
-      - name: cache libghostty-vt
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/libghostty
-          key: libghostty-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
-
-      # The module cache is read-only, so build in a writable copy and point
-      # pkg-config at the generated .pc file for the build and test steps. A
-      # cache hit reuses the prior build and only re-exports PKG_CONFIG_PATH.
-      #
-      # Build for the explicit baseline zig target of the runner's own
-      # architecture rather than the native default: a native build detects and
-      # enables the build runner's optional CPU features, which would fault on
-      # older CPUs sharing the supported architecture baseline. The cross-target
-      # machinery emits a baseline static lib under build/ghostty-<vt>/ that the
-      # native cgo compiler links, since the target arch matches the runner.
-      - name: build libghostty-vt
-        shell: bash
-        run: |
-          work="$RUNNER_TEMP/libghostty"
-          if [ ! -d "$work/build" ]; then
-            go mod download go.mitchellh.com/libghostty
-            src="$(go list -m -f '{{.Dir}}' go.mitchellh.com/libghostty)"
-            cp -R "$src" "$work"
-            chmod -R u+w "$work"
-            cmake -S "$work" -B "$work/build" -DCMAKE_BUILD_TYPE=Release \
-              -DGHOSTTY_VT_CROSS_TARGETS="${{ matrix.vt }}=${{ matrix.zig }}"
-            for attempt in 1 2 3; do
-              if cmake --build "$work/build" --target "zig_build_lib_vt_${{ matrix.vt }}"; then
-                break
-              fi
-              if [ "$attempt" -eq 3 ]; then
-                exit 1
-              fi
-              echo "libghostty-vt build attempt $attempt failed; retrying" >&2
-              sleep $((attempt * 10))
-            done
-          fi
-          prefix="$work/build/ghostty-${{ matrix.vt }}"
-          archive="$prefix/lib/libghostty-vt.a"
-          src="$prefix/share/pkgconfig/libghostty-vt-static.pc"
-          for f in "$archive" "$src"; do
-            if [ ! -f "$f" ]; then
-              echo "expected build output missing: $f" >&2
-              find "$work/build" -name "$(basename "$f")" >&2 || true
-              exit 1
-            fi
-          done
-          # zig bakes absolute install paths into the generated .pc files and,
-          # depending on build cache state, nondeterministically emits paths under
-          # its default zig-out layout rather than the cross install dir, which
-          # breaks the cgo link. Do not trust those paths: rewrite the .pc so the
-          # location vars and the static archive resolve to where the artifacts
-          # actually landed, and confine pkg-config to a dedicated directory via
-          # PKG_CONFIG_LIBDIR so no stray generated .pc can be resolved instead.
-          pcdir="$work/pkgconfig"
-          rm -rf "$pcdir"
-          mkdir -p "$pcdir"
-          {
-            echo "prefix=$prefix"
-            echo "includedir=$prefix/include"
-            echo "libdir=$prefix/lib"
-            grep -vE '^(prefix|includedir|libdir)=' "$src" \
-              | sed -E "s#[^[:space:]]*/libghostty-vt\.a#$archive#g"
-          } >"$pcdir/libghostty-vt-static.pc"
-          # Fail loudly and early if resolution still does not point at the real
-          # archive, rather than surfacing later as an opaque link error.
-          resolved="$(PKG_CONFIG_PATH="$pcdir" PKG_CONFIG_LIBDIR="$pcdir" \
-            pkg-config --libs --static libghostty-vt-static)"
-          case "$resolved" in
-            *"$archive"*) : ;;
-            *) echo "pkg-config did not resolve $archive: [$resolved]" >&2
-               cat "$pcdir"/*.pc >&2
-               exit 1 ;;
-          esac
-          {
-            printf 'PKG_CONFIG_PATH=%s\n' "$pcdir"
-            printf 'PKG_CONFIG_LIBDIR=%s\n' "$pcdir"
-          } >> "$GITHUB_ENV"
+          cache: true
+          cache-dependency-path: go.sum
 
       - name: lint
         uses: golangci/golangci-lint-action@v8

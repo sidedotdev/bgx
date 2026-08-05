@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	lg "go.mitchellh.com/libghostty"
+	lg "github.com/ehsanul/libghostty-vt-static"
 )
 
 // plainText renders the terminal's visible contents as trimmed plain text so

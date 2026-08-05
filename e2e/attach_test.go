@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	lg "go.mitchellh.com/libghostty"
+	lg "github.com/ehsanul/libghostty-vt-static"
 )
 
 func closePTY(t *testing.T, ptmx *os.File) {

@@ -81,6 +81,8 @@ intent_links:
       - e2e/filesystem_test.go
   - intent: "#implementation"
     code:
+      - go.mod
+      - go.sum
       - cmd/bgx/main.go
       - daemonize.go:InterceptDaemon
       - daemon/daemon.go:Serve
@@ -91,6 +93,8 @@ intent_links:
       - scrollback/store.go:Snapshot
       - vtscan/vtscan.go
       - vt/vt.go
+      - vt/vt_test.go
+      - e2e/attach_test.go
 ---
 
 # bgx
