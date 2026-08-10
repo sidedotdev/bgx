@@ -120,29 +120,6 @@ func (v *attachView) feed(payload []byte) error {
 	return nil
 }
 
-// resync replaces the view's state from a full-screen snapshot. The frames it
-// supersedes were dropped, so the local terminal is recreated rather than
-// written to, discarding any modes those frames may have set.
-func (v *attachView) resync(payload []byte) error {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if v.term == nil {
-		return nil
-	}
-	v.term.Close()
-	term, err := vt.New(v.cols, v.rows)
-	if err != nil {
-		v.term = nil
-		return fmt.Errorf("recreate attach view: %w", err)
-	}
-	v.term = term
-	if _, err := v.term.Write(payload); err != nil {
-		return fmt.Errorf("resync attach view: %w", err)
-	}
-	v.markDirty()
-	return nil
-}
-
 // close stops painting and releases the local terminal, flushing a repaint that
 // was still pending. It is idempotent and waits for any in-flight paint, so
 // callers can write their own sequences afterwards without interleaving.

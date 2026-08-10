@@ -341,12 +341,6 @@ func runTerminalAttach(
 				} else {
 					err = writeBytes(payload)
 				}
-			case daemon.FrameResync:
-				if view != nil {
-					err = view.resync(payload)
-				} else {
-					err = writeBytes(payload)
-				}
 			case daemon.FrameResize:
 				err = sendSize()
 			case daemon.FrameEnded:

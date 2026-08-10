@@ -477,10 +477,16 @@ func attachCapture(t *testing.T, socketPath string, sentinel []byte) (snapshot, 
 }
 
 // assertAttachTiles verifies a single client's snapshot and stream tile the full
-// output exactly: the stream is a clean suffix and the snapshot equals the
-// rendering of the preceding prefix.
+// output exactly: the stream is a clean suffix and the RIS-prefixed snapshot
+// equals the rendering of the preceding prefix.
 func assertAttachTiles(t *testing.T, idx int, full, snapshot, stream []byte) {
 	t.Helper()
+	ris := []byte("\x1bc")
+	if !bytes.HasPrefix(snapshot, ris) {
+		t.Errorf("client %d: snapshot does not begin with RIS", idx)
+		return
+	}
+	snapshot = snapshot[len(ris):]
 	if len(stream) > len(full) || !bytes.Equal(full[len(full)-len(stream):], stream) {
 		t.Errorf("client %d: streamed output is not a suffix of the session output (stream=%dB, full=%dB); output was lost or duplicated during the attach handoff", idx, len(stream), len(full))
 		return
@@ -567,34 +573,28 @@ func TestSlowClientResyncsInsteadOfDisconnect(t *testing.T) {
 	}
 
 	if !open {
-		t.Fatalf("slow client was disconnected instead of re-synced")
+		t.Fatalf("slow client was disconnected instead of skipped forward")
 	}
 	if !resynced {
-		t.Fatalf("slow client never received a re-sync snapshot; its backlog never overflowed")
+		t.Fatalf("slow client never received a skip-forward snapshot; its backlog never overflowed")
 	}
-	// The overflowed backlog must be skipped, not merely followed by a re-sync:
-	// the slow client should never receive most burst lines as streamed output
-	// (they are dropped and bridged by re-sync snapshots). Delivering the whole
-	// backlog before a redundant re-sync would surface nearly every burst line.
+	// The overflowed backlog must be skipped, not merely followed by a snapshot:
+	// the slow client should never receive most burst lines as streamed output.
+	// Delivering the whole backlog before a redundant snapshot would surface
+	// nearly every burst line.
 	burstSeen := map[string]struct{}{}
 	for _, m := range regexp.MustCompile(`b\d{6}`).FindAll(streamedOut, -1) {
 		burstSeen[string(m)] = struct{}{}
 	}
 	if len(burstSeen) >= burst/2 {
-		t.Fatalf("slow client received %d of %d burst lines as streamed output; the overflowed backlog was delivered instead of being skipped forward via re-sync", len(burstSeen), burst)
+		t.Fatalf("slow client received %d of %d burst lines as streamed output; the overflowed backlog was delivered instead of being skipped forward", len(burstSeen), burst)
 	}
-	clear := []byte("\x1b[2J\x1b[H")
-	if !bytes.HasPrefix(resyncSnap, clear) {
-		t.Fatalf("re-sync snapshot must begin with a screen clear so the client repaints from a blank screen")
-	}
-	// The latest re-sync snapshot (after its leading clear) plus the bytes
-	// streamed after it must tile the full output exactly: the post-re-sync
-	// stream is a clean suffix and the snapshot equals the rendering of the
-	// preceding prefix, proving the client resumes with no lost or duplicated
-	// bytes relative to the fresh snapshot.
-	assertAttachTiles(t, -2, full, resyncSnap[len(clear):], postStream)
+	// The latest skip-forward snapshot plus the bytes streamed after it must
+	// tile the full output exactly: the post-snapshot stream is a clean suffix
+	// and the snapshot equals the rendering of the preceding prefix.
+	assertAttachTiles(t, -2, full, resyncSnap, postStream)
 	if !bytes.Contains(postStream, sentinelBytes) {
-		t.Fatalf("slow client did not resume streaming through to the latest output after the re-sync")
+		t.Fatalf("slow client did not resume streaming through to the latest output after the skip-forward")
 	}
 	assertAttachTiles(t, -1, full, fastSnapshot, fastStream)
 }
@@ -602,11 +602,10 @@ func TestSlowClientResyncsInsteadOfDisconnect(t *testing.T) {
 // slowAttachCapture performs the attach handshake, then stalls long enough for
 // its backlog to overflow and afterwards reads one frame per tick — far slower
 // than the flood — so the backlog keeps overflowing and the daemon must skip
-// this client forward. It returns the latest re-sync snapshot, the raw stream
-// after that snapshot, all streamed output (every Output frame after the initial
-// snapshot, excluding re-sync snapshots), whether any re-sync arrived, and
-// whether the connection stayed open through to the sentinel (a disconnected
-// client surfaces as a read error before the sentinel).
+// this client forward. It returns the latest skip-forward snapshot, the raw
+// stream after that snapshot, all non-snapshot output after the initial state,
+// whether any skip-forward arrived, and whether the connection stayed open
+// through to the sentinel.
 func slowAttachCapture(t *testing.T, socketPath string, sentinel []byte) (resyncSnap, postStream, streamedOut []byte, resynced, open bool) {
 	t.Helper()
 	conn, err := net.Dial("unix", socketPath)
@@ -637,32 +636,35 @@ func slowAttachCapture(t *testing.T, socketPath string, sentinel []byte) (resync
 
 	// Stall so the burst overruns the bounded backlog before reading anything.
 	time.Sleep(500 * time.Millisecond)
+	ris := []byte("\x1bc")
 	gotSnapshot := false
 	for {
 		tag, payload, err := ReadFrame(br)
 		if err != nil {
 			return resyncSnap, postStream, streamedOut, resynced, false
 		}
-		switch tag {
-		case FrameResync:
-			// A fresh snapshot supersedes everything streamed so far; only bytes
-			// received after the latest re-sync must tile from it.
+		if tag != FrameOutput {
+			continue
+		}
+		if bytes.HasPrefix(payload, ris) {
+			if !gotSnapshot {
+				gotSnapshot = true
+				continue
+			}
 			resynced = true
 			resyncSnap = payload
 			postStream = postStream[:0]
-		case FrameOutput:
-			if !gotSnapshot {
-				// The first Output frame is the initial attach snapshot, not
-				// part of the streamed output.
-				gotSnapshot = true
-				break
-			}
-			streamedOut = append(streamedOut, payload...)
-			postStream = append(postStream, payload...)
+			continue
 		}
+		if !gotSnapshot {
+			t.Errorf("streamed output arrived before the initial RIS-prefixed snapshot")
+			return resyncSnap, postStream, streamedOut, resynced, false
+		}
+		streamedOut = append(streamedOut, payload...)
+		postStream = append(postStream, payload...)
 		// The sentinel is the last line; once it and a trailing newline have
-		// arrived after the latest re-sync, the post-re-sync stream covers
-		// everything up to end of output.
+		// arrived after the latest snapshot, the stream covers everything up to
+		// end of output.
 		if i := bytes.Index(postStream, sentinel); i >= 0 && bytes.IndexByte(postStream[i+len(sentinel):], '\n') >= 0 {
 			if err := WriteFrame(conn, FrameDetach, nil); err != nil {
 				t.Errorf("detach slow client: %v", err)
@@ -718,7 +720,7 @@ func TestSessionEndDeliversOutputThenCloses(t *testing.T) {
 	resCh := make(chan result, 1)
 	go func() {
 		var r result
-		gotSnapshot := false
+		ris := []byte("\x1bc")
 		signaled := false
 		for {
 			tag, payload, rerr := ReadFrame(br)
@@ -727,14 +729,12 @@ func TestSessionEndDeliversOutputThenCloses(t *testing.T) {
 			}
 			switch tag {
 			case FrameOutput:
-				if !gotSnapshot {
-					gotSnapshot = true
+				if bytes.HasPrefix(payload, ris) {
 					r.snapshot = payload
+					r.stream = r.stream[:0]
 				} else {
 					r.stream = append(r.stream, payload...)
 				}
-			case FrameResync:
-				r.stream = append(r.stream, payload...)
 			case FrameEnded:
 				r.ended = true
 			}
@@ -826,7 +826,7 @@ func TestAttachIgnoresUnknownClientFrames(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read frame after unknown tag: %v", err)
 		}
-		if tag == FrameOutput || tag == FrameResync {
+		if tag == FrameOutput {
 			output = append(output, payload...)
 		}
 	}

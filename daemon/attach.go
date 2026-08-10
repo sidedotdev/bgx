@@ -31,13 +31,13 @@ type outFrame struct {
 type attacher struct {
 	conn net.Conn
 
-	// mu guards the outbound frame buffer and resync/close state. cond wakes the
-	// writer goroutine when new frames, a pending resync, or a close arrive.
-	mu     sync.Mutex
-	cond   *sync.Cond
-	buf    []outFrame
-	resync []byte // fresh snapshot pending after a backlog overflow (nil = none)
-	closed bool
+	// mu guards the outbound frame buffer and snapshot/close state. cond wakes
+	// the writer when new frames, a pending snapshot, or a close arrive.
+	mu              sync.Mutex
+	cond            *sync.Cond
+	buf             []outFrame
+	pendingSnapshot []byte
+	closed          bool
 
 	// rows and cols hold the client's last reported window size (0 = unknown),
 	// guarded by s.mu.
@@ -76,7 +76,7 @@ func (s *Session) serveAttach(conn net.Conn, r io.Reader) error {
 	// Capture the snapshot and join the fanout atomically so no output is lost
 	// or duplicated between rendering the screen and subscribing to the stream.
 	s.outMu.Lock()
-	snap, err := s.term.DumpScreen()
+	snap, err := s.snapshot()
 	if err == nil {
 		s.mu.Lock()
 		s.attachers[a] = struct{}{}
@@ -139,7 +139,7 @@ func (s *Session) attachWriter(a *attacher, snap []byte, done chan<- error) {
 	}
 	for {
 		a.mu.Lock()
-		for len(a.buf) == 0 && a.resync == nil && !a.closed {
+		for len(a.buf) == 0 && a.pendingSnapshot == nil && !a.closed {
 			a.cond.Wait()
 		}
 		if a.closed {
@@ -148,17 +148,15 @@ func (s *Session) attachWriter(a *attacher, snap []byte, done chan<- error) {
 			return
 		}
 		// deliverOutput already dropped the stale pre-snapshot backlog when it
-		// captured the resync; the frames still queued here were rendered after
-		// the snapshot and so tile from it, so emit the snapshot ahead of them
-		// rather than dropping them. Taking one frame at a time and re-checking
-		// for a resync between writes means an overflow landing mid-write
-		// abandons any later stale frames on the next iteration instead of
-		// streaming the whole backlog ahead of the fresh snapshot.
-		if a.resync != nil {
-			resync := a.resync
-			a.resync = nil
+		// captured the snapshot; the frames still queued here were rendered
+		// afterwards and tile from it. Taking one frame at a time and re-checking
+		// for a snapshot between writes lets an overflow abandon later stale
+		// frames before they are streamed ahead of the fresh state.
+		if a.pendingSnapshot != nil {
+			snapshot := a.pendingSnapshot
+			a.pendingSnapshot = nil
 			a.mu.Unlock()
-			if err := WriteFrame(a.conn, FrameResync, resync); err != nil {
+			if err := WriteFrame(a.conn, FrameOutput, snapshot); err != nil {
 				done <- errors.Join(err, a.conn.Close())
 				return
 			}
@@ -219,14 +217,13 @@ func (s *Session) deliverOutput(a *attacher, data []byte) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if len(a.buf) >= attachQueue {
-		snap, err := s.term.DumpScreen()
+		snap, err := s.snapshot()
 		if err != nil {
-			s.recordHandlerError(fmt.Errorf("dump screen for attach resync: %w", err))
+			s.recordHandlerError(fmt.Errorf("dump screen for attach skip-forward: %w", err))
 			return
 		}
 		a.buf = a.buf[:0]
-		// DumpScreen assumes a pre-cleared screen, so prepend a clear+home.
-		a.resync = append([]byte("\x1b[2J\x1b[H"), snap...)
+		a.pendingSnapshot = snap
 		a.cond.Signal()
 		return
 	}

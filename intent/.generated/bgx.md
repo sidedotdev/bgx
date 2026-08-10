@@ -12,6 +12,7 @@ intent_links:
       - daemon/frame.go
       - client.go:dialRequest
       - daemon/attach.go
+      - e2e/bridge_test.go:TestBridgeForwardsAttachProtocolVerbatim
   - intent: "#terminal-state"
     code:
       - vt/vt.go:Terminal
@@ -115,9 +116,10 @@ One unix domain socket per session lives under the XDG runtime dir (tmp
 fallback), with the session id encoded into a single safe filename component.
 Clients speak a JSON-line request/response protocol (`info`, `wait`, `kill`,
 `send`, `history`). `attach` upgrades the same connection, after the JSON
-handshake, to tagged length-prefixed binary frames (Input/Output/Resize/Detach)
-for raw bidirectional bridging. `history` is returned as base64 in the JSON
-response and written raw to stdout by the client.
+handshake, to tagged length-prefixed binary frames
+(Input/Output/Resize/Detach/Ended) for raw bidirectional bridging. Ended carries
+no payload and is followed by connection closure. `history` is returned as
+base64 in the JSON response and written raw to stdout by the client.
 
 ## Terminal state
 
@@ -129,25 +131,29 @@ no client is attached so interactive programs don't hang.
 
 ## Attach handoff
 
-A client joining a live session receives a point-in-time `DumpScreen` snapshot
-followed by the raw output stream. To avoid losing or duplicating output
-produced between rendering the snapshot and subscribing to the stream,
-`serveAttach` captures the snapshot and joins the output fanout under the same
-`outMu` that `pumpOutput` holds while writing each chunk to the terminal and
-fanning it out. Each PTY chunk therefore lands entirely before the snapshot
-(reflected in it, not streamed) or entirely after the subscription (streamed,
-not in the snapshot), so a client's snapshot and stream tile the full session
-output with no gap or overlap. `TestAttachSnapshotStreamCoversEntireOutput` is
-the torture test guarding this invariant.
+A client joining a live session receives an ordinary Output frame containing
+RIS followed by a point-in-time `DumpScreen` rendering, then the raw output
+stream. To avoid losing or duplicating output produced between rendering the
+snapshot and subscribing to the stream, `serveAttach` captures the snapshot and
+joins the output fanout under the same `outMu` that `pumpOutput` holds while
+writing each chunk to the terminal and fanning it out. Each PTY chunk therefore
+lands entirely before the snapshot (reflected in it, not streamed) or entirely
+after the subscription (streamed, not in the snapshot), so a client's snapshot
+and stream tile the full session output with no gap or overlap. If a client
+falls behind, its queued output is replaced with a newer RIS-prefixed snapshot,
+also carried as an ordinary Output frame, before live streaming resumes.
+`TestAttachSnapshotStreamCoversEntireOutput` and
+`TestSlowClientResyncsInsteadOfDisconnect` guard these invariants.
 
 With `--show-detach-instructions` the client cannot forward session bytes to the
 physical terminal, because the stream may clear the screen, reset scrolling
 margins, address the cursor absolutely or switch to the alternate screen, any of
 which would corrupt the reserved line. Instead the client keeps its own
 libghostty-vt terminal sized to cols x (rows-1) — the size it also advertises to
-the daemon — feeds Output frames into it, recreates it on Resync, and paints its
-`DumpScreen` plus the hint as a single coalesced redraw. A terminal with only one
-row reserves nothing and gets the full size.
+the daemon — feeds every Output frame into it, and paints its `DumpScreen` plus
+the hint as a single coalesced redraw. RIS-prefixed snapshots reset this local
+terminal in-band. A terminal with only one row reserves nothing and gets the
+full size.
 
 ## Send and wait semantics
 

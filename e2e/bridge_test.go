@@ -84,7 +84,7 @@ func TestBridgeForwardsAttachProtocolVerbatim(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read frame: %v (output=%q, stderr=%q)", err, output, stderr.String())
 		}
-		if tag == daemon.FrameOutput || tag == daemon.FrameResync {
+		if tag == daemon.FrameOutput {
 			output = append(output, payload...)
 		}
 	}

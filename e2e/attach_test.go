@@ -624,10 +624,14 @@ func TestAttachClosesOnSessionEnd(t *testing.T) {
 		t.Fatalf("attach client wait: %v", err)
 	}
 
-	// Session end resets only the cursor (show cursor + reset SGR) and must not
-	// issue the full terminal reset (ESC c) that a ctrl+\ detach uses.
+	// The initial state starts with RIS, while session teardown resets only the
+	// cursor (show cursor + reset SGR).
 	out := output()
-	if strings.Contains(out, "\x1bc") {
+	helloAt := strings.Index(out, "hello")
+	if helloAt < 0 || !strings.Contains(out[:helloAt], "\x1bc") {
+		t.Fatalf("initial terminal state did not begin with a full reset; got %q", out)
+	}
+	if strings.Contains(out[helloAt:], "\x1bc") {
 		t.Fatalf("session end performed a full terminal reset; got %q", out)
 	}
 	if !strings.Contains(out, "\x1b[?25h\x1b[0m") {

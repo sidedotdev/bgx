@@ -105,6 +105,16 @@ intent_links:
       - vt/vt.go
       - vt/vt_test.go
       - e2e/attach_test.go
+  - intent: "#attach"
+    code:
+      - daemon/daemon.go:snapshot
+      - daemon/attach.go:serveAttach
+      - daemon/attach.go:attachWriter
+      - daemon/attach.go:deliverOutput
+      - daemon/daemon_test.go:TestAttachSnapshotStreamCoversEntireOutput
+      - daemon/daemon_test.go:TestSlowClientResyncsInsteadOfDisconnect
+      - daemon/daemon_test.go:TestSessionEndDeliversOutputThenCloses
+      - e2e/attach_test.go:TestAttachClosesOnSessionEnd
 ---
 
 # bgx
