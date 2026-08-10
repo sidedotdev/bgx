@@ -273,6 +273,16 @@ exercises all potential scenarios to discover race conditions automatically
 
 ## Implementation
 
+## Dependencies
+
 Uses adrg/xdg, urfave/cli/v3 and ehsanul/libghostty-vt-static. Other
 dependencies are limited to those required for robustness/correctness and to
 support multiple platforms effectively.
+
+## Attach
+
+- The attach protocol uses tagged, length-prefixed frames for terminal input,
+  terminal output, resize, detach, and session end.
+- Initial and skip-forward terminal states are delivered as ordinary output
+  frames containing a full VT reset (RIS) followed by a rendering of the current
+  screen. Snapshots do not use a separate frame type.
