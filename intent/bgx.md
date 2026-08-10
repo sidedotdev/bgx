@@ -238,6 +238,7 @@ an error including any daemon stderr output.
 ### Filesystem Requirements
 
 - bgx respects $XDG_RUNTIME_DIR for sockets
+- bgx respects $XDG_STATE_HOME for history data
 - bgx clearly reports errors with accessing $XDG_RUNTIME_DIR when it is set
 - If not set, or not accessible, bgx prefers default XDG directories when
   possible, falling back to other options as needed: $HOME/.bgx/, then /tmp/bgx/
