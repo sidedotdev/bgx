@@ -82,7 +82,10 @@ func dirCandidates() []dirCandidate {
 // probing it for write access. The first usable candidate wins; if it is not
 // the preferred one, a notice records what was skipped and why.
 func computeDirs() dirResolution {
-	candidates := dirCandidates()
+	return computeDirCandidates(dirCandidates())
+}
+
+func computeDirCandidates(candidates []dirCandidate) dirResolution {
 	var attempts []string
 	for i, c := range candidates {
 		if err := usableDir(c.path); err != nil {

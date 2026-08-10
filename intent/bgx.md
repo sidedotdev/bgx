@@ -60,10 +60,12 @@ intent_links:
     code:
       - dirs.go
       - dirs.go:resolveDirs
+      - dirs.go:computeDirCandidates
       - dirs.go:socketDir
       - dirs.go:retentionDir
       - dirs.go:ensureDirs
       - dirs.go:fallbackNotice
+      - dirs_test.go:TestComputeDirCandidatesReportsConfiguredXDGAccessError
       - internal/cli/cli.go:runner.withDirs
       - internal/cli/cli.go:runner.runAction
       - internal/cli/cli.go:runner.versionAction
