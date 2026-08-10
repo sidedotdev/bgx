@@ -101,7 +101,7 @@ func TestAttachStreamsAndDetaches(t *testing.T) {
 	historyContains(t, dir, "att", "hello")
 
 	cmd := exec.Command(binPath, "attach", "att")
-	cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+dir, "TMPDIR="+dir)
+	cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+dir, "XDG_STATE_HOME="+dir, "TMPDIR="+dir)
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		t.Fatalf("pty start: %v", err)
@@ -202,7 +202,7 @@ func TestAttachResizePropagates(t *testing.T) {
 	}
 
 	cmd := exec.Command(binPath, "attach", "rsz")
-	cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+dir, "TMPDIR="+dir)
+	cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+dir, "XDG_STATE_HOME="+dir, "TMPDIR="+dir)
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 50, Cols: 120})
 	if err != nil {
 		t.Fatalf("pty start: %v", err)
@@ -300,7 +300,7 @@ func TestAttachDetachesOnSplitCtrlBackslash(t *testing.T) {
 	}
 
 	cmd := exec.Command(binPath, "attach", "split")
-	cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+dir, "TMPDIR="+dir)
+	cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+dir, "XDG_STATE_HOME="+dir, "TMPDIR="+dir)
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		t.Fatalf("pty start: %v", err)
@@ -378,7 +378,7 @@ func (c *attachE2EClient) output() string {
 func startAttachE2EClient(t *testing.T, dir, id string, ws *pty.Winsize, extraArgs ...string) *attachE2EClient {
 	t.Helper()
 	cmd := exec.Command(binPath, append(append([]string{"attach"}, extraArgs...), id)...)
-	cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+dir, "TMPDIR="+dir)
+	cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+dir, "XDG_STATE_HOME="+dir, "TMPDIR="+dir)
 	var (
 		ptmx *os.File
 		err  error
@@ -556,7 +556,7 @@ func TestAttachClosesOnSessionEnd(t *testing.T) {
 	historyContains(t, dir, "att2", "hello")
 
 	cmd := exec.Command(binPath, "attach", "att2")
-	cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+dir, "TMPDIR="+dir)
+	cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+dir, "XDG_STATE_HOME="+dir, "TMPDIR="+dir)
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		t.Fatalf("pty start: %v", err)

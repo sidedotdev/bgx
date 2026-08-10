@@ -33,7 +33,7 @@ func TestBridgeForwardsAttachProtocolVerbatim(t *testing.T) {
 	}
 
 	cmd := exec.Command(binPath, "bridge", "br")
-	cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+dir, "TMPDIR="+dir)
+	cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+dir, "XDG_STATE_HOME="+dir, "TMPDIR="+dir)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatalf("stdin pipe: %v", err)
@@ -267,7 +267,7 @@ func TestAttachViaTransportBridgesRemoteSession(t *testing.T) {
 
 	cmd := exec.Command(binPath, "attach", "viasess",
 		"--via", "env", "PATH="+wrapDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+dir, "TMPDIR="+dir)
+	cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+dir, "XDG_STATE_HOME="+dir, "TMPDIR="+dir)
 	driveInteractiveAttach(t, cmd, "viamarker", "polo\r", "polo")
 	expectRunning(t, dir, "viasess")
 }
@@ -292,7 +292,7 @@ func TestAttachSSHExpandsToTransportCommand(t *testing.T) {
 	}
 
 	cmd := exec.Command(binPath, "attach", "--ssh", "remotehost", "viassh")
-	cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+dir, "TMPDIR="+dir,
+	cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+dir, "XDG_STATE_HOME="+dir, "TMPDIR="+dir,
 		"PATH="+wrapDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	driveInteractiveAttach(t, cmd, "sshmarker", "ping\r", "ping")
 	expectRunning(t, dir, "viassh")

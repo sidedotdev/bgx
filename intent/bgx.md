@@ -60,6 +60,9 @@ intent_links:
     code:
       - dirs.go
       - dirs.go:resolveDirs
+      - dirs.go:resolveStateDir
+      - dirs.go:dirCandidates
+      - dirs.go:stateDirCandidates
       - dirs.go:socketDir
       - dirs.go:retentionDir
       - dirs.go:ensureDirs
@@ -68,7 +71,12 @@ intent_links:
       - internal/cli/cli.go:runner.runAction
       - internal/cli/cli.go:runner.versionAction
       - command_api.go:Version
+      - transport_test.go:TestMain
+      - e2e/run_test.go:bgxIn
+      - e2e/attach_test.go
+      - e2e/bridge_test.go
       - e2e/filesystem_test.go
+      - e2e/filesystem_test.go:TestStateHomeStoresHistoryData
   - intent: "#testing--verification"
     code:
       - e2e/main_test.go:run

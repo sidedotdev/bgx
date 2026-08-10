@@ -38,6 +38,13 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(1)
 	}
+	if err := os.Setenv("XDG_STATE_HOME", dir); err != nil {
+		fmt.Fprintln(os.Stderr, "set test state dir:", err)
+		if removeErr := os.RemoveAll(dir); removeErr != nil {
+			fmt.Fprintln(os.Stderr, "remove test state dir:", removeErr)
+		}
+		os.Exit(1)
+	}
 	code := m.Run()
 	if err := os.RemoveAll(dir); err != nil {
 		fmt.Fprintln(os.Stderr, "remove test runtime dir:", err)

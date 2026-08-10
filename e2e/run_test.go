@@ -66,6 +66,7 @@ func bgxIn(t *testing.T, dir string, args ...string) result {
 	cmd := exec.Command(binPath, args...)
 	cmd.Env = append(os.Environ(),
 		"XDG_RUNTIME_DIR="+dir,
+		"XDG_STATE_HOME="+dir,
 		"TMPDIR="+dir,
 	)
 	var stdout, stderr bytes.Buffer

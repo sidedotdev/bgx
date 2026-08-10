@@ -56,11 +56,19 @@ intent_links:
     code:
       - dirs.go
       - dirs.go:resolveDirs
+      - dirs.go:resolveStateDir
       - dirs.go:computeDirs
+      - dirs.go:computeDirResolution
       - dirs.go:dirCandidates
+      - dirs.go:stateDirCandidates
       - dirs.go:usableDir
       - dirs.go:ensureDirs
       - dirs.go:fallbackNotice
+      - transport_test.go:TestMain
+      - e2e/run_test.go:bgxIn
+      - e2e/attach_test.go
+      - e2e/bridge_test.go
+      - e2e/filesystem_test.go:TestStateHomeStoresHistoryData
       - internal/cli/cli.go:runner.withDirs
   - intent: "#error-reporting"
     code:
@@ -152,10 +160,11 @@ process with that same code.
 
 Scrollback head/tail sizes, storage kind/path, and retention count are
 configured via `run` flags (with env fallbacks) and forwarded to the daemon.
-Ended-session records and histories are persisted under a tmp retention dir,
-grouped by id namespace (the substring before the first "/"; slashless ids share
-one global namespace), keeping only the newest N (default 10) per namespace.
-Currently-running sessions count toward that N: when an ending session prunes
+Ended-session records and histories are persisted under the XDG state directory
+(with home/tmp fallbacks), grouped by id namespace (the substring before the
+first "/"; slashless ids share one global namespace), keeping only the newest N
+(default 10) per namespace. Currently-running sessions count toward that N: when
+an ending session prunes
 its namespace, it reserves one slot for each live session sharing the namespace
 (discovered by scanning the socket dir), so finished/killed records plus active
 sessions together stay within the limit.
@@ -183,18 +192,18 @@ follow the same contract instead of plain-text usage/help output.
 
 ## Base directory resolution
 
-bgx resolves a single base directory once per process by walking an ordered,
-de-duplicated candidate chain: `$XDG_RUNTIME_DIR/bgx` when that env var is set
-(else the library's default XDG runtime dir), then `$HOME/.bgx`, then
-`<tmp>/bgx`, and finally `<cwd>/.bgx` as a last resort. Each candidate is created
-idempotently (`0700`) and probed for write access; a candidate that fails to
-create or write advances to the next. Sockets live under `<base>/run` and ended
-records under `<base>/ended`. An explicitly-set but unusable `$XDG_RUNTIME_DIR`
-is called out by name. Any fallback is logged to stderr exactly once and echoed
-in JSON output (`run`, `version`) via a `fallback` field; when every candidate
-fails, client commands report a clear all-fallbacks-failed JSON error and do
-nothing else. Resolution lives only in the client: the daemon receives concrete
-`--socket`/`--retention-dir` args and never re-resolves.
+bgx independently resolves runtime and state base directories once per process.
+Sockets prefer `$XDG_RUNTIME_DIR/bgx`, then the default XDG runtime directory;
+ended records and histories prefer `$XDG_STATE_HOME/bgx`, then the default XDG
+state directory. Both chains continue through `$HOME/.bgx`, `<tmp>/bgx`, and
+`<cwd>/.bgx`. Each candidate is created idempotently (`0700`) and probed for
+write access; a candidate that fails to create or write advances to the next.
+An explicitly set but unusable XDG directory is called out by name. Fallbacks
+are logged to stderr once per chain and combined in JSON output (`run`,
+`version`) via a `fallback` field. If either chain has no usable candidate,
+client commands report a clear error and do nothing else. Resolution lives only
+in the client: the daemon receives concrete socket and retention paths and
+never re-resolves.
 
 ## Boundary alignment and truncation demarcation
 

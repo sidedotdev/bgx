@@ -11,16 +11,13 @@ import (
 	"github.com/adrg/xdg"
 )
 
-// dirCandidate is a base directory bgx may use for its sockets and retained
-// records, paired with a human-readable name for diagnostics.
+// dirCandidate pairs a directory with a human-readable name for diagnostics.
 type dirCandidate struct {
 	name string
 	path string
 }
 
-// dirResolution is the memoized outcome of walking the base-directory fallback
-// chain: the chosen base plus a notice describing any fallback, or an error
-// when every candidate was unusable.
+// dirResolution is the memoized outcome of walking a directory fallback chain.
 type dirResolution struct {
 	base   string
 	notice string
@@ -28,8 +25,10 @@ type dirResolution struct {
 }
 
 var (
-	dirOnce   sync.Once
-	dirResult dirResolution
+	dirOnce     sync.Once
+	dirResult   dirResolution
+	stateOnce   sync.Once
+	stateResult dirResolution
 )
 
 // resolveDirs walks the fallback chain once per process, logging any fallback
@@ -45,10 +44,9 @@ func resolveDirs() dirResolution {
 	return dirResult
 }
 
-// dirCandidates builds the ordered, de-duplicated list of base directories to
-// try. It prefers an explicitly set $XDG_RUNTIME_DIR, then the default XDG
-// runtime dir, then $HOME/.bgx, then /tmp/bgx, and finally ./.bgx as a last
-// resort.
+// dirCandidates builds the ordered, de-duplicated list of socket base
+// directories. It prefers an explicitly set $XDG_RUNTIME_DIR, then the default
+// XDG runtime dir, then $HOME/.bgx, /tmp/bgx, and ./.bgx.
 func dirCandidates() []dirCandidate {
 	var out []dirCandidate
 	seen := map[string]bool{}
@@ -63,40 +61,16 @@ func dirCandidates() []dirCandidate {
 	if v := os.Getenv("XDG_RUNTIME_DIR"); v != "" {
 		add("$XDG_RUNTIME_DIR", filepath.Join(v, "bgx"))
 	}
-	// The default XDG runtime dir is preferred whenever $XDG_RUNTIME_DIR is
-	// unset or unusable, so it follows the explicit value as its own candidate.
 	if xdg.RuntimeDir != "" {
 		add("default XDG runtime dir", filepath.Join(xdg.RuntimeDir, "bgx"))
 	}
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		add("$HOME/.bgx", filepath.Join(home, ".bgx"))
-	}
-	add("/tmp/bgx", filepath.Join(os.TempDir(), "bgx"))
-	if cwd, err := os.Getwd(); err == nil && cwd != "" {
-		add("./.bgx", filepath.Join(cwd, ".bgx"))
-	}
+	addCommonDirCandidates(&out, seen)
 	return out
 }
 
-// computeDirs tries each candidate in order, idempotently creating it and
-// probing it for write access. The first usable candidate wins; if it is not
-// the preferred one, a notice records what was skipped and why.
+// computeDirs resolves the socket base-directory fallback chain.
 func computeDirs() dirResolution {
-	candidates := dirCandidates()
-	var attempts []string
-	for i, c := range candidates {
-		if err := usableDir(c.path); err != nil {
-			attempts = append(attempts, fmt.Sprintf("%s (%s): %v", c.name, c.path, err))
-			continue
-		}
-		notice := ""
-		if i > 0 {
-			notice = fmt.Sprintf("bgx: %s unusable, falling back to %s (%s); skipped: %s",
-				candidates[0].name, c.name, c.path, strings.Join(attempts, "; "))
-		}
-		return dirResolution{base: c.path, notice: notice}
-	}
-	return dirResolution{err: fmt.Errorf("all base directory fallbacks failed: %s", strings.Join(attempts, "; "))}
+	return computeDirResolution(dirCandidates(), "runtime")
 }
 
 // usableDir idempotently creates dir and verifies it is writable by creating
@@ -113,16 +87,23 @@ func usableDir(dir string) error {
 	return errors.Join(probe.Close(), os.Remove(probe.Name()))
 }
 
-// ensureDirs reports whether a usable base directory was found, returning a
-// clear error only when every fallback failed.
+// ensureDirs prepares independently resolved locations for sockets and retained
+// session data.
 func ensureDirs() error {
-	return resolveDirs().err
+	return errors.Join(resolveDirs().err, resolveStateDir().err)
 }
 
-// fallbackNotice returns a human-readable description of any fallback that
-// occurred, or the empty string when the preferred directory was used.
+// fallbackNotice returns a human-readable description of runtime or state
+// directory fallbacks.
 func fallbackNotice() string {
-	return resolveDirs().notice
+	var notices []string
+	if notice := resolveDirs().notice; notice != "" {
+		notices = append(notices, notice)
+	}
+	if notice := resolveStateDir().notice; notice != "" {
+		notices = append(notices, notice)
+	}
+	return strings.Join(notices, "; ")
 }
 
 // socketDir is where per-session unix domain sockets live, beneath the resolved
@@ -137,10 +118,9 @@ func socketDir() string {
 }
 
 // retentionDir holds persisted records and histories for ended sessions,
-// grouped by id namespace beneath it. It returns the empty string when
-// resolution failed so callers never fabricate a relative path.
+// grouped by id namespace beneath the resolved state directory.
 func retentionDir() string {
-	base := resolveDirs().base
+	base := resolveStateDir().base
 	if base == "" {
 		return ""
 	}
@@ -150,4 +130,76 @@ func retentionDir() string {
 // EnsureDirs resolves and prepares the directories used by session operations.
 func EnsureDirs() error {
 	return ensureDirs()
+}
+
+// resolveStateDir walks the state-directory fallback chain once per process.
+func resolveStateDir() dirResolution {
+	stateOnce.Do(func() {
+		stateResult = computeDirResolution(stateDirCandidates(), "state")
+		if stateResult.notice != "" {
+			fmt.Fprintln(os.Stderr, stateResult.notice)
+		}
+	})
+	return stateResult
+}
+
+// stateDirCandidates builds the ordered, de-duplicated list of retained-data
+// base directories.
+func stateDirCandidates() []dirCandidate {
+	var out []dirCandidate
+	seen := map[string]bool{}
+	add := func(name, path string) {
+		if path == "" || seen[path] {
+			return
+		}
+		seen[path] = true
+		out = append(out, dirCandidate{name: name, path: path})
+	}
+
+	if v := os.Getenv("XDG_STATE_HOME"); v != "" {
+		add("$XDG_STATE_HOME", filepath.Join(v, "bgx"))
+	}
+	if xdg.StateHome != "" {
+		add("default XDG state dir", filepath.Join(xdg.StateHome, "bgx"))
+	}
+	addCommonDirCandidates(&out, seen)
+	return out
+}
+
+func addCommonDirCandidates(out *[]dirCandidate, seen map[string]bool) {
+	add := func(name, path string) {
+		if path == "" || seen[path] {
+			return
+		}
+		seen[path] = true
+		*out = append(*out, dirCandidate{name: name, path: path})
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		add("$HOME/.bgx", filepath.Join(home, ".bgx"))
+	}
+	add("/tmp/bgx", filepath.Join(os.TempDir(), "bgx"))
+	if cwd, err := os.Getwd(); err == nil && cwd != "" {
+		add("./.bgx", filepath.Join(cwd, ".bgx"))
+	}
+}
+
+// computeDirResolution selects the first writable candidate and records enough
+// context to diagnose any fallback.
+func computeDirResolution(candidates []dirCandidate, kind string) dirResolution {
+	var attempts []string
+	for i, candidate := range candidates {
+		if err := usableDir(candidate.path); err != nil {
+			attempts = append(attempts, fmt.Sprintf("%s (%s): %v", candidate.name, candidate.path, err))
+			continue
+		}
+		notice := ""
+		if i > 0 {
+			notice = fmt.Sprintf("bgx: %s unusable, falling back to %s (%s); skipped: %s",
+				candidates[0].name, candidate.name, candidate.path, strings.Join(attempts, "; "))
+		}
+		return dirResolution{base: candidate.path, notice: notice}
+	}
+	return dirResolution{
+		err: fmt.Errorf("all base directory fallbacks failed (%s): %s", kind, strings.Join(attempts, "; ")),
+	}
 }

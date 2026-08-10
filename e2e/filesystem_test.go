@@ -18,6 +18,9 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/sidedotdev/bgx/daemon"
 )
 
 // captureCmd runs cmd, capturing its stdout/stderr and exit code the same way
@@ -279,5 +282,69 @@ exit 1
 	}
 	if m["id"] != "demo" {
 		t.Fatalf("info id = %v, want demo; stdout=%q", m["id"], res.stdout)
+	}
+}
+func TestStateHomeStoresHistoryData(t *testing.T) {
+	root := resolvedTempDir(t)
+	runtimeDir := filepath.Join(root, "runtime")
+	stateHome := filepath.Join(root, "state")
+	env := []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + root,
+		"TMPDIR=" + root,
+		"XDG_RUNTIME_DIR=" + runtimeDir,
+		"XDG_STATE_HOME=" + stateHome,
+	}
+	run := func(args ...string) result {
+		t.Helper()
+		cmd := exec.Command(binPath, args...)
+		cmd.Env = env
+		return captureCmd(t, cmd)
+	}
+
+	version := run("version")
+	if version.exitCode != 0 {
+		t.Fatalf("version exit=%d stderr=%q stdout=%q", version.exitCode, version.stderr, version.stdout)
+	}
+	versionJSON := decodeJSON(t, version.stdout)
+	wantSocketDir := filepath.Join(runtimeDir, "bgx", "run")
+	if got := versionJSON["socket_dir"]; got != wantSocketDir {
+		t.Fatalf("socket_dir = %v, want %q", got, wantSocketDir)
+	}
+	wantRetentionDir := filepath.Join(stateHome, "bgx", "ended")
+	if got := versionJSON["retention_dir"]; got != wantRetentionDir {
+		t.Fatalf("retention_dir = %v, want %q", got, wantRetentionDir)
+	}
+
+	const marker = "xdg-state-history"
+	started := run("run", "state-home", "printf", marker)
+	if started.exitCode != 0 {
+		t.Fatalf("run exit=%d stderr=%q stdout=%q", started.exitCode, started.stderr, started.stdout)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		history := run("history", "state-home")
+		if history.exitCode == 0 && strings.Contains(history.stdout, marker) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf(
+				"history was not persisted under XDG_STATE_HOME; exit=%d stderr=%q stdout=%q",
+				history.exitCode,
+				history.stderr,
+				history.stdout,
+			)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	historyPath := daemon.HistoryPath(wantRetentionDir, "state-home")
+	data, err := os.ReadFile(historyPath)
+	if err != nil {
+		t.Fatalf("read history from XDG_STATE_HOME: %v", err)
+	}
+	if !strings.Contains(string(data), marker) {
+		t.Fatalf("history at %s = %q, want marker %q", historyPath, data, marker)
 	}
 }
