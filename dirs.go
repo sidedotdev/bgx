@@ -73,6 +73,23 @@ func computeDirs() dirResolution {
 	return computeDirResolution(dirCandidates(), "runtime")
 }
 
+func computeDirCandidates(candidates []dirCandidate) dirResolution {
+	var attempts []string
+	for i, c := range candidates {
+		if err := usableDir(c.path); err != nil {
+			attempts = append(attempts, fmt.Sprintf("%s (%s): %v", c.name, c.path, err))
+			continue
+		}
+		notice := ""
+		if i > 0 {
+			notice = fmt.Sprintf("bgx: %s unusable, falling back to %s (%s); skipped: %s",
+				candidates[0].name, c.name, c.path, strings.Join(attempts, "; "))
+		}
+		return dirResolution{base: c.path, notice: notice}
+	}
+	return dirResolution{err: fmt.Errorf("all base directory fallbacks failed: %s", strings.Join(attempts, "; "))}
+}
+
 // usableDir idempotently creates dir and verifies it is writable by creating
 // and removing a probe file, so a directory that exists but denies writes is
 // treated as unusable.
