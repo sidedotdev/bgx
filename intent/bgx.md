@@ -208,7 +208,9 @@ But is customized for our needs:
    - Client resizes are forwarded to the session PTY. When there are multiple,
      the smallest column size, and smallest row size across all clients (even if
      different clients) is forwarded, ensuring non-broken rendering
-   - Detach with ctrl+\, which resets the terminal to state prior to attaching
+   - Detach with ctrl+\, which resets the terminal to the same state prior to
+     attaching. That is, it leaves earlier terminal scroll history and position
+     in place
    - Closes automatically when session ends or disconnects, resetting the cursor
      but not the entire terminal state
    - Showing detach instructions means a line of the terminal is reserved by the
