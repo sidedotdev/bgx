@@ -50,6 +50,11 @@ func (r *pairedModelRecorder) DumpScreen() ([]byte, error) {
 	return nil, nil
 }
 
+func (r *pairedModelRecorder) WrittenRows() (uint16, error) {
+	r.record("screen.writtenRows")
+	return 0, nil
+}
+
 func (r *pairedModelRecorder) feed([]byte) error {
 	r.record("view.feed")
 	return nil

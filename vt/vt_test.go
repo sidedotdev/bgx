@@ -124,3 +124,35 @@ func TestResizeReflowsContent(t *testing.T) {
 		t.Fatalf("after reflow want 100 cells, got %d", got)
 	}
 }
+func TestWrittenRowsTracksCursorHighWaterMark(t *testing.T) {
+	term := newTerm(t)
+	if _, err := term.Write([]byte("text\r\n\r\n\x1b[H")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	rows, err := term.WrittenRows()
+	if err != nil {
+		t.Fatalf("WrittenRows: %v", err)
+	}
+	if rows != 3 {
+		t.Fatalf("WrittenRows = %d, want 3", rows)
+	}
+}
+
+func TestWrittenRowsClampsWhenTerminalShrinks(t *testing.T) {
+	term := newTerm(t)
+	if _, err := term.Write([]byte("\x1b[20Htext")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := term.Resize(80, 10); err != nil {
+		t.Fatalf("Resize: %v", err)
+	}
+
+	rows, err := term.WrittenRows()
+	if err != nil {
+		t.Fatalf("WrittenRows: %v", err)
+	}
+	if rows != 10 {
+		t.Fatalf("WrittenRows = %d, want 10", rows)
+	}
+}

@@ -119,11 +119,14 @@ intent_links:
       - attachview.go:newAttachView
       - attachview.go:attachView.setSize
       - attachview_test.go:TestAttachViewCloseRetainsAsynchronousPaintError
+      - vt/vt.go:Terminal.WrittenRows
+      - vt/vt_test.go:TestWrittenRowsTracksCursorHighWaterMark
+      - vt/vt_test.go:TestWrittenRowsClampsWhenTerminalShrinks
       - client_attach.go:finalAttachScreenPrefix
       - client_attach.go:finalAttachOutcomePrefix
       - client_attach.go:runTerminalAttach
       - client_attach_test.go:assertLifecycleRestoresHistoryAndPrintsFinalState
-      - client_attach_test.go:TestClientAttachSessionEndPrintsOutcomeAfterFullHeightSnapshot
+      - client_attach_test.go:TestClientAttachSessionEndPrintsOutcomeAfterWrittenRows
       - client_attach_test.go:assertTerminalStatePreserved
       - client_attach_test.go:shortWriteTerminal
       - client_attach_test.go:shortWriteTerminal.Write

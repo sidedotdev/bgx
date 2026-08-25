@@ -10,6 +10,7 @@ import (
 type attachScreen interface {
 	Write(p []byte) (int, error)
 	Resize(cols, rows uint16) error
+	WrittenRows() (uint16, error)
 	DumpScreen() ([]byte, error)
 }
 
@@ -24,6 +25,7 @@ type attachSnapshot struct {
 	cols         uint16
 	rows         uint16
 	physicalRows uint16
+	writtenRows  uint16
 }
 
 // attachModels applies session events to the snapshot screen and the display
@@ -69,10 +71,15 @@ func (m *attachModels) snapshot() (attachSnapshot, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	contents, err := m.screen.DumpScreen()
+	if err != nil {
+		return attachSnapshot{}, err
+	}
+	writtenRows, err := m.screen.WrittenRows()
 	return attachSnapshot{
 		contents:     contents,
 		cols:         m.cols,
 		rows:         m.rows,
 		physicalRows: m.physicalRows,
+		writtenRows:  writtenRows,
 	}, err
 }

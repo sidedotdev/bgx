@@ -300,7 +300,6 @@ func TestAttachDisconnectClearsDetachInstructionsWithoutReset(t *testing.T) {
 		out,
 		40,
 		12,
-		11,
 		[]string{"connected"},
 		"Disconnected from session",
 	)

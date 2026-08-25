@@ -206,8 +206,8 @@ func finalAttachOutcomePrefix(snapshot attachSnapshot) string {
 	if snapshot.cols == 0 || snapshot.rows == 0 || snapshot.physicalRows == 0 {
 		return cleanup + "\r\n"
 	}
-	if snapshot.rows < snapshot.physicalRows {
-		return fmt.Sprintf("%s\x1b[%d;1H", cleanup, snapshot.rows+1)
+	if snapshot.writtenRows < snapshot.physicalRows {
+		return fmt.Sprintf("%s\x1b[%d;1H", cleanup, snapshot.writtenRows+1)
 	}
 	return fmt.Sprintf("%s\x1b[%d;1H\r\n", cleanup, snapshot.physicalRows)
 }

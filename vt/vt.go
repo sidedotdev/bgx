@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	lg "github.com/ehsanul/libghostty-vt-static"
+	"github.com/sidedotdev/bgx/vtscan"
 )
 
 const (
@@ -27,8 +28,10 @@ const (
 // daemon feeds PTY output via Write from its output pump while attach handlers
 // concurrently call DumpScreen, so every libghostty call is serialized.
 type Terminal struct {
-	mu   sync.Mutex
-	term *lg.Terminal
+	mu          sync.Mutex
+	term        *lg.Terminal
+	scan        vtscan.Scanner
+	writtenRows uint16
 }
 
 // New returns a Terminal sized to cols x rows.
@@ -41,13 +44,45 @@ func New(cols, rows uint16) (*Terminal, error) {
 }
 
 // Write feeds raw VT-encoded bytes through the terminal's parser, updating the
-// visible screen state. Malformed input is handled gracefully by libghostty and
-// never reported as an error, so Write always reports the full length consumed,
-// satisfying io.Writer for use as a tee target alongside the scrollback store.
+// visible screen state. Cursor position is sampled between complete terminal
+// operations so later cursor movement cannot hide rows touched earlier in the
+// same write. Extent sampling is supplemental and does not alter io.Writer's
+// all-bytes-consumed contract.
 func (t *Terminal) Write(p []byte) (int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.term.VTWrite(p)
+
+	start := 0
+	flush := func(end int) {
+		if start == end {
+			return
+		}
+		t.term.VTWrite(p[start:end])
+		start = end
+		row, err := t.term.CursorY()
+		if err != nil {
+			return
+		}
+		if touched := row + 1; touched > t.writtenRows {
+			t.writtenRows = touched
+		}
+	}
+
+	for i, b := range p {
+		wasGround := t.scan.AtGround()
+		control := b < 0x20 || b == 0x7f
+		if wasGround && (b == 0x1b || control) {
+			flush(i)
+		}
+
+		t.scan.Advance(p[i : i+1])
+		sequenceEnded := !wasGround && t.scan.AtGround()
+		groundControl := wasGround && control && b != 0x1b
+		if sequenceEnded || groundControl {
+			flush(i + 1)
+		}
+	}
+	flush(len(p))
 	return len(p), nil
 }
 
@@ -56,7 +91,21 @@ func (t *Terminal) Write(p []byte) (int, error) {
 func (t *Terminal) Resize(cols, rows uint16) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.term.Resize(cols, rows, 0, 0)
+	if err := t.term.Resize(cols, rows, 0, 0); err != nil {
+		return err
+	}
+	if t.writtenRows > rows {
+		t.writtenRows = rows
+	}
+	return nil
+}
+
+// WrittenRows returns the 1-based greatest row reached while processing output.
+// It is zero until output first affects the terminal parser.
+func (t *Terminal) WrittenRows() (uint16, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.writtenRows, nil
 }
 
 // DumpScreen renders the current visible terminal state as VT sequences that

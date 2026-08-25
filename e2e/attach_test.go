@@ -88,7 +88,7 @@ func hintRows(rendered []string) []int {
 func assertAttachLifecycleTranscriptPreservesHistory(
 	t *testing.T,
 	transcript string,
-	cols, physicalRows, sessionRows uint16,
+	cols, physicalRows uint16,
 	sessionLines []string,
 	outcome string,
 ) {
@@ -127,11 +127,7 @@ func assertAttachLifecycleTranscriptPreservesHistory(
 	if restoredAt < 0 {
 		t.Fatalf("pre-attach terminal content was lost; history=%q transcript=%q", history, transcript)
 	}
-	sessionState := append([]string(nil), sessionLines...)
-	for len(sessionState) < int(sessionRows) {
-		sessionState = append(sessionState, "")
-	}
-	finalState := strings.Join(sessionState, "\n") + "\n" + outcome
+	finalState := strings.Join(sessionLines, "\n") + "\n" + outcome
 	finalStateAt := strings.LastIndex(history, finalState)
 	if finalStateAt <= restoredAt {
 		t.Fatalf("complete final session state and lifecycle outcome were not preserved after restored history; want %q in history=%q transcript=%q", finalState, history, transcript)
@@ -716,7 +712,6 @@ func TestAttachClosesOnSessionEnd(t *testing.T) {
 		t,
 		output(),
 		80,
-		24,
 		24,
 		[]string{"hello"},
 		"Session ended",
