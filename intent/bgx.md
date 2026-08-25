@@ -233,8 +233,8 @@ But is customized for our needs:
    - Detach with ctrl+\, which resets the terminal to the same state prior to
      attaching. That is, it leaves earlier terminal scroll history and position
      in place
-   - Closes automatically when session ends or disconnects, acting similarly to explicit detach with the exception of including 
-     message about what happened (disconnect vs session ended successfully)
+   - Closes automatically when session ends or disconnects, resetting the cursor
+     but not the entire terminal state
    - Showing detach instructions means a line of the terminal is reserved by the
      client for showing how to detach.
      - This line is cleared when session ends or disconnects.
