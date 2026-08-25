@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -82,6 +83,59 @@ func hintRows(rendered []string) []int {
 		}
 	}
 	return rows
+}
+
+func assertAttachLifecycleTranscriptPreservesHistory(
+	t *testing.T,
+	transcript string,
+	cols, physicalRows, sessionRows uint16,
+	sessionLines []string,
+	outcome string,
+) {
+	t.Helper()
+	emulated, err := lg.NewTerminal(
+		lg.WithSize(cols, physicalRows),
+		lg.WithMaxScrollback(uint(physicalRows)+50),
+	)
+	if err != nil {
+		t.Fatalf("NewTerminal: %v", err)
+	}
+	defer emulated.Close()
+
+	for i := 0; i < int(physicalRows)+10; i++ {
+		emulated.VTWrite([]byte(fmt.Sprintf("history-%03d\r\n", i)))
+	}
+	const restoredText = "shell prompt> draft"
+	emulated.VTWrite([]byte(restoredText))
+	emulated.VTWrite([]byte(transcript))
+
+	selection, err := emulated.SelectAll()
+	if err != nil {
+		t.Fatalf("SelectAll: %v", err)
+	}
+	history, err := emulated.SelectionFormatString(
+		lg.WithSelection(selection),
+		lg.WithSelectionFormat(lg.FormatterFormatPlain),
+		lg.WithSelectionTrim(false),
+		lg.WithSelectionUnwrap(false),
+	)
+	if err != nil {
+		t.Fatalf("SelectionFormatString: %v", err)
+	}
+
+	restoredAt := strings.Index(history, restoredText)
+	if restoredAt < 0 {
+		t.Fatalf("pre-attach terminal content was lost; history=%q transcript=%q", history, transcript)
+	}
+	sessionState := append([]string(nil), sessionLines...)
+	for len(sessionState) < int(sessionRows) {
+		sessionState = append(sessionState, "")
+	}
+	finalState := strings.Join(sessionState, "\n") + "\n" + outcome
+	finalStateAt := strings.LastIndex(history, finalState)
+	if finalStateAt <= restoredAt {
+		t.Fatalf("complete final session state and lifecycle outcome were not preserved after restored history; want %q in history=%q transcript=%q", finalState, history, transcript)
+	}
 }
 
 // TestAttachStreamsAndDetaches drives the attach client under a pty: the
@@ -576,8 +630,8 @@ func TestAttachMultiClientMinSize(t *testing.T) {
 }
 
 // TestAttachClosesOnSessionEnd drives the attach client under a pty and verifies
-// that when the session ends the client exits on its own and resets only the
-// cursor (not a full terminal reset), leaving the final rendered output visible.
+// that when the session ends the client exits on its own without a full terminal
+// reset, preserving prior history before the final session state and outcome.
 func TestAttachClosesOnSessionEnd(t *testing.T) {
 	dir := runDir(t)
 
@@ -658,14 +712,15 @@ func TestAttachClosesOnSessionEnd(t *testing.T) {
 		t.Fatalf("attach client wait: %v", err)
 	}
 
-	rendered := renderScreen(t, output()+"X", 80, 24)
-	screen := strings.Join(rendered, "\n")
-	if !strings.Contains(screen, "hello") {
-		t.Fatalf("final session output was not preserved; screen=%q output=%q", rendered, output())
-	}
-	if !strings.Contains(screen, "Session ended\nX") {
-		t.Fatalf("session-ended message was not printed after final state; screen=%q output=%q", rendered, output())
-	}
+	assertAttachLifecycleTranscriptPreservesHistory(
+		t,
+		output(),
+		80,
+		24,
+		24,
+		[]string{"hello"},
+		"Session ended",
+	)
 }
 
 // TestAttachShowDetachInstructionsReservesLine verifies that attaching with

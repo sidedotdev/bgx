@@ -399,7 +399,9 @@ func TestClientAttachDetachInstructionsReserveRowAndRenderHint(t *testing.T) {
 	// one-row-shorter size.
 	expectResizeFrame(t, frames, 23, 80)
 
-	if err := daemon.WriteFrame(serverConn, daemon.FrameOutput, []byte("hi")); err != nil {
+	sessionLines := []string{"FINAL-TOP", "FINAL-MIDDLE", "FINAL-BOTTOM"}
+	payload := []byte("FINAL-TOP\r\nFINAL-MIDDLE\r\nFINAL-BOTTOM\x1b[H")
+	if err := daemon.WriteFrame(serverConn, daemon.FrameOutput, payload); err != nil {
 		t.Fatalf("write output frame: %v", err)
 	}
 	if err := daemon.WriteFrame(serverConn, daemon.FrameEnded, nil); err != nil {
@@ -416,15 +418,26 @@ func TestClientAttachDetachInstructionsReserveRowAndRenderHint(t *testing.T) {
 	}
 
 	output, _, _ := terminal.snapshot()
-	if !strings.Contains(output, "hi") {
-		t.Fatalf("terminal output %q does not contain the session output", output)
+	for _, line := range sessionLines {
+		if !strings.Contains(output, line) {
+			t.Fatalf("terminal output %q does not contain session line %q", output, line)
+		}
 	}
 	if !strings.Contains(output, `detach: ctrl+\`) {
 		t.Fatalf("terminal output %q does not contain the detach hint", output)
 	}
-	if !strings.HasSuffix(output, "\r\nSession ended\r\n") {
+	if !strings.HasSuffix(output, "Session ended\r\n") {
 		t.Fatalf("terminal output = %q, want session-ended message after final state", output)
 	}
+	assertLifecycleRestoresHistoryAndPrintsFinalState(
+		t,
+		output,
+		80,
+		24,
+		23,
+		sessionLines,
+		"Session ended",
+	)
 }
 
 type unexpectedValueError struct {
@@ -1548,6 +1561,11 @@ func TestClientAttachDisconnectClearsDetachInstructionsWithoutReset(t *testing.T
 	}()
 
 	expectResizeFrame(t, frames, 23, 80)
+	sessionLines := []string{"DISCONNECT-TOP", "DISCONNECT-MIDDLE", "DISCONNECT-BOTTOM"}
+	payload := []byte("DISCONNECT-TOP\r\nDISCONNECT-MIDDLE\r\nDISCONNECT-BOTTOM\x1b[H")
+	if err := daemon.WriteFrame(serverConn, daemon.FrameOutput, payload); err != nil {
+		t.Fatalf("write output frame: %v", err)
+	}
 	if err := serverConn.Close(); err != nil {
 		t.Fatalf("close attach server: %v", err)
 	}
@@ -1569,15 +1587,81 @@ func TestClientAttachDisconnectClearsDetachInstructionsWithoutReset(t *testing.T
 		t.Fatalf("terminal output = %q, remote disconnect must not fully reset terminal", output)
 	}
 	leaveAlt := strings.LastIndex(output, "\x1b[?1049l")
-	repaint := strings.LastIndex(output, "\x1b[2J\x1b[H\x1b[0m")
-	if leaveAlt < 0 || repaint < leaveAlt {
-		t.Fatalf("terminal output = %q, want final session state repainted after leaving alternate screen", output)
+	if leaveAlt < 0 {
+		t.Fatalf("terminal output = %q, want alternate screen restored", output)
 	}
-	if !strings.Contains(output[repaint:], "\x1b[?25h\x1b[0m") {
+	for _, line := range sessionLines {
+		if !strings.Contains(output[leaveAlt:], line) {
+			t.Fatalf("terminal output after alternate screen = %q, want line %q", output[leaveAlt:], line)
+		}
+	}
+	if !strings.Contains(output[leaveAlt:], "\x1b[?25h\x1b[0m") {
 		t.Fatalf("terminal output = %q, want cursor and style cleanup", output)
 	}
-	if !strings.HasSuffix(output, "\r\nDisconnected from session\r\n") {
+	if !strings.HasSuffix(output, "Disconnected from session\r\n") {
 		t.Fatalf("terminal output = %q, want disconnect message after final state", output)
+	}
+	assertLifecycleRestoresHistoryAndPrintsFinalState(
+		t,
+		output,
+		80,
+		24,
+		23,
+		sessionLines,
+		"Disconnected from session",
+	)
+}
+
+func assertLifecycleRestoresHistoryAndPrintsFinalState(
+	t *testing.T,
+	output string,
+	cols, physicalRows, sessionRows uint16,
+	sessionLines []string,
+	outcome string,
+) {
+	t.Helper()
+	emulated, err := lg.NewTerminal(
+		lg.WithSize(cols, physicalRows),
+		lg.WithMaxScrollback(uint(physicalRows)+50),
+	)
+	if err != nil {
+		t.Fatalf("NewTerminal: %v", err)
+	}
+	defer emulated.Close()
+
+	for i := 0; i < int(physicalRows)+10; i++ {
+		emulated.VTWrite([]byte(fmt.Sprintf("history-%03d\r\n", i)))
+	}
+	const restoredText = "shell prompt> draft"
+	emulated.VTWrite([]byte(restoredText))
+	emulated.VTWrite([]byte(output))
+
+	selection, err := emulated.SelectAll()
+	if err != nil {
+		t.Fatalf("SelectAll: %v", err)
+	}
+	history, err := emulated.SelectionFormatString(
+		lg.WithSelection(selection),
+		lg.WithSelectionFormat(lg.FormatterFormatPlain),
+		lg.WithSelectionTrim(false),
+		lg.WithSelectionUnwrap(false),
+	)
+	if err != nil {
+		t.Fatalf("SelectionFormatString: %v", err)
+	}
+
+	restoredAt := strings.Index(history, restoredText)
+	if restoredAt < 0 {
+		t.Fatalf("pre-attach terminal content was lost; history=%q output=%q", history, output)
+	}
+	sessionState := append([]string(nil), sessionLines...)
+	for len(sessionState) < int(sessionRows) {
+		sessionState = append(sessionState, "")
+	}
+	finalState := strings.Join(sessionState, "\n") + "\n" + outcome
+	finalStateAt := strings.LastIndex(history, finalState)
+	if finalStateAt <= restoredAt {
+		t.Fatalf("complete final session state and lifecycle outcome were not preserved together after restored history; want %q in history=%q output=%q", finalState, history, output)
 	}
 }
 
@@ -1780,4 +1864,65 @@ func TestClientAttachConcurrentOutputAndResizeKeepsSnapshotConsistent(t *testing
 	if !strings.Contains(output[leaveAlt:], "final-marker") {
 		t.Fatalf("final snapshot diverged from displayed session output; got %q", output[leaveAlt:])
 	}
+}
+func TestClientAttachSessionEndPrintsOutcomeAfterFullHeightSnapshot(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() {
+		if err := serverConn.Close(); err != nil {
+			t.Errorf("close attach server: %v", err)
+		}
+	})
+	dial := func(context.Context) (io.ReadWriteCloser, error) {
+		return clientConn, nil
+	}
+	frames := attachFrameServer(t, serverConn)
+
+	inputReader, inputWriter := io.Pipe()
+	t.Cleanup(func() {
+		if err := inputReader.Close(); err != nil {
+			t.Errorf("close terminal input reader: %v", err)
+		}
+		if err := inputWriter.Close(); err != nil {
+			t.Errorf("close terminal input writer: %v", err)
+		}
+	})
+	terminal := newTestTerminal(&contextPipeReader{inputReader})
+
+	result := make(chan error, 1)
+	go func() {
+		result <- bgx.NewClient(dial).Attach(context.Background(), terminal)
+	}()
+
+	expectResizeFrame(t, frames, 24, 80)
+	sessionLines := []string{"FULL-TOP", "FULL-MIDDLE", "FULL-BOTTOM"}
+	payload := []byte("FULL-TOP\r\nFULL-MIDDLE\r\nFULL-BOTTOM\x1b[H")
+	if err := daemon.WriteFrame(serverConn, daemon.FrameOutput, payload); err != nil {
+		t.Fatalf("write output frame: %v", err)
+	}
+	if err := daemon.WriteFrame(serverConn, daemon.FrameEnded, nil); err != nil {
+		t.Fatalf("write ended frame: %v", err)
+	}
+
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("Attach: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Attach did not return after session end")
+	}
+
+	output, _, _ := terminal.snapshot()
+	if !strings.HasSuffix(output, "Session ended\r\n") {
+		t.Fatalf("terminal output = %q, want session-ended message after final state", output)
+	}
+	assertLifecycleRestoresHistoryAndPrintsFinalState(
+		t,
+		output,
+		80,
+		24,
+		24,
+		sessionLines,
+		"Session ended",
+	)
 }

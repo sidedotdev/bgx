@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -189,6 +190,28 @@ func withoutExpectedAttachShutdownErrors(err error, includeEOF bool) error {
 	return err
 }
 
+func finalAttachScreenPrefix(snapshot attachSnapshot) string {
+	var b strings.Builder
+	b.WriteString("\x1b[?1049l\x1b[r")
+	if snapshot.physicalRows > 0 {
+		fmt.Fprintf(&b, "\x1b[%d;1H", snapshot.physicalRows)
+		b.WriteString(strings.Repeat("\r\n", int(snapshot.physicalRows)))
+	}
+	b.WriteString("\x1b[H\x1b[0m")
+	return b.String()
+}
+
+func finalAttachOutcomePrefix(snapshot attachSnapshot) string {
+	const cleanup = "\x1b[?25h\x1b[0m"
+	if snapshot.cols == 0 || snapshot.rows == 0 || snapshot.physicalRows == 0 {
+		return cleanup + "\r\n"
+	}
+	if snapshot.rows < snapshot.physicalRows {
+		return fmt.Sprintf("%s\x1b[%d;1H", cleanup, snapshot.rows+1)
+	}
+	return fmt.Sprintf("%s\x1b[%d;1H\r\n", cleanup, snapshot.physicalRows)
+}
+
 func runTerminalAttach(
 	ctx context.Context,
 	conn io.Writer,
@@ -232,13 +255,22 @@ func runTerminalAttach(
 		return nil
 	}
 
-	screen, err := vt.New(vt.DefaultCols, vt.DefaultRows)
+	sessionRows := uint16(vt.DefaultRows)
+	if cfg.showDetachInstructions && sessionRows > 1 {
+		sessionRows--
+	}
+	screen, err := vt.New(vt.DefaultCols, sessionRows)
 	if err != nil {
 		return fmt.Errorf("attach: initialize terminal state: %w", err)
 	}
 	defer screen.Close()
 
-	models := &attachModels{screen: screen}
+	models := &attachModels{
+		screen:       screen,
+		cols:         vt.DefaultCols,
+		rows:         sessionRows,
+		physicalRows: vt.DefaultRows,
+	}
 
 	var view *attachView
 	var detached, sessionEnded atomic.Bool
@@ -265,23 +297,21 @@ func runTerminalAttach(
 			if err != nil {
 				retErr = errors.Join(retErr, fmt.Errorf("attach: render final terminal state: %w", err))
 			}
-			if err := writeOut("\x1b[?1049l"); err != nil {
+			if err := writeOut(finalAttachScreenPrefix(snapshot)); err != nil {
 				retErr = errors.Join(retErr, err)
 				return
 			}
-			if len(snapshot) > 0 {
-				if err := writeOut("\x1b[2J\x1b[H\x1b[0m"); err != nil {
-					retErr = errors.Join(retErr, err)
-				} else if err := writeBytes(snapshot); err != nil {
+			if len(snapshot.contents) > 0 {
+				if err := writeBytes(snapshot.contents); err != nil {
 					retErr = errors.Join(retErr, err)
 				}
 			}
-			if err := writeOut("\x1b[?25h\x1b[0m"); err != nil {
+			if err := writeOut(finalAttachOutcomePrefix(snapshot)); err != nil {
 				retErr = errors.Join(retErr, err)
 			}
-			message := "\r\nDisconnected from session\r\n"
+			message := "Disconnected from session\r\n"
 			if sessionEnded.Load() {
-				message = "\r\nSession ended\r\n"
+				message = "Session ended\r\n"
 			}
 			if err := writeOut(message); err != nil {
 				retErr = errors.Join(retErr, err)

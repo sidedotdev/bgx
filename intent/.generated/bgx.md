@@ -37,7 +37,10 @@ intent_links:
       - client_attach_test.go:TestClientAttachDetachIsSuccessful
       - attachview.go:attachView
       - attachview.go:paint
+      - e2e/attach_test.go:assertAttachLifecycleTranscriptPreservesHistory
+      - e2e/attach_test.go:TestAttachClosesOnSessionEnd
       - e2e/attach_test.go:TestAttachShowDetachInstructionsSurvivesDestructiveOutput
+      - e2e/attach_errors_test.go:TestAttachDisconnectClearsDetachInstructionsWithoutReset
   - intent: "#send-and-wait-semantics"
     code:
       - client.go:sendAction
@@ -154,6 +157,12 @@ the daemon — feeds every Output frame into it, and paints its `DumpScreen` plu
 the hint as a single coalesced redraw. RIS-prefixed snapshots reset this local
 terminal in-band. A terminal with only one row reserves nothing and gets the
 full size.
+
+When a session ends or its daemon disconnects, the client leaves the alternate
+screen, moves the restored normal screen into existing scrollback without
+erasing it, replays the complete final session state, and prints the lifecycle
+outcome on the following line. End-to-end regressions replay real attach
+transcripts over populated terminal history for both paths.
 
 ## Send and wait semantics
 

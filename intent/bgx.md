@@ -112,13 +112,18 @@ intent_links:
   - intent: "#attach"
     code:
       - attachmodels.go:attachModels
+      - attachmodels.go:attachSnapshot
       - attachmodels_test.go:TestAttachModelsResizeCannotInterleaveOutput
       - attachmodels_test.go:TestAttachModelsOutputCannotInterleaveResize
       - attachview.go:attachView
       - attachview.go:newAttachView
       - attachview.go:attachView.setSize
       - attachview_test.go:TestAttachViewCloseRetainsAsynchronousPaintError
+      - client_attach.go:finalAttachScreenPrefix
+      - client_attach.go:finalAttachOutcomePrefix
       - client_attach.go:runTerminalAttach
+      - client_attach_test.go:assertLifecycleRestoresHistoryAndPrintsFinalState
+      - client_attach_test.go:TestClientAttachSessionEndPrintsOutcomeAfterFullHeightSnapshot
       - client_attach_test.go:assertTerminalStatePreserved
       - client_attach_test.go:shortWriteTerminal
       - client_attach_test.go:shortWriteTerminal.Write
@@ -133,6 +138,7 @@ intent_links:
       - client_attach_test.go:TestClientAttachReportsStreamedTerminalShortWrite
       - client_attach_test.go:TestClientAttachConcurrentOutputAndResizeKeepsSnapshotConsistent
       - client_attach_test.go:TestClientAttachDisconnectClearsDetachInstructionsWithoutReset
+      - e2e/attach_test.go:assertAttachLifecycleTranscriptPreservesHistory
       - e2e/attach_errors_test.go:TestAttachDisconnectClearsDetachInstructionsWithoutReset
       - daemon/daemon.go:snapshot
       - daemon/attach.go:serveAttach
