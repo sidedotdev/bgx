@@ -202,11 +202,17 @@ func TestAttachStreamsAndDetaches(t *testing.T) {
 		return string(state)
 	}
 
+	const detachMessage = "\r\nDetached from session\r\n"
+	beforeMessage, found := strings.CutSuffix(output(), detachMessage)
+	if !found {
+		t.Fatalf("attach output = %q, want suffix %q", output(), detachMessage)
+	}
+
 	before := format()
-	emulated.VTWrite([]byte(output()))
+	emulated.VTWrite([]byte(beforeMessage))
 	after := format()
 	if after != before {
-		t.Fatalf("visible terminal state and cursor after detach differ from pre-attach state:\nbefore %q\nafter  %q\nattach output %q", before, after, output())
+		t.Fatalf("visible terminal state and cursor before detach message differ from pre-attach state:\nbefore %q\nafter  %q\nattach output %q", before, after, output())
 	}
 
 	info := decodeJSON(t, bgxIn(t, dir, "info", "att").stdout)
@@ -653,8 +659,12 @@ func TestAttachClosesOnSessionEnd(t *testing.T) {
 	}
 
 	rendered := renderScreen(t, output()+"X", 80, 24)
-	if !strings.Contains(strings.Join(rendered, "\n"), "helloX") {
-		t.Fatalf("final session output or cursor was not preserved; screen=%q output=%q", rendered, output())
+	screen := strings.Join(rendered, "\n")
+	if !strings.Contains(screen, "hello") {
+		t.Fatalf("final session output was not preserved; screen=%q output=%q", rendered, output())
+	}
+	if !strings.Contains(screen, "Session ended\nX") {
+		t.Fatalf("session-ended message was not printed after final state; screen=%q output=%q", rendered, output())
 	}
 }
 

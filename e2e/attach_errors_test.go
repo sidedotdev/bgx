@@ -289,6 +289,9 @@ func TestAttachDisconnectClearsDetachInstructionsWithoutReset(t *testing.T) {
 	if !strings.Contains(out, "\x1b[?25h\x1b[0m") {
 		t.Fatalf("daemon disconnect did not reset the cursor and style; got %q", out)
 	}
+	if !strings.Contains(out, "\r\nDisconnected from session\r\n") {
+		t.Fatalf("daemon disconnect did not print its outcome after the final state; got %q", out)
+	}
 	if rows := hintRows(renderScreen(t, out, 40, 12)); len(rows) != 0 {
 		t.Fatalf("detach hint still rendered on rows %v after daemon disconnect", rows)
 	}

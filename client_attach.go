@@ -254,6 +254,9 @@ func runTerminalAttach(
 			if err := writeOut("\x1b[?1049l"); err != nil {
 				retErr = errors.Join(retErr, err)
 			}
+			if err := writeOut("\r\nDetached from session\r\n"); err != nil {
+				retErr = errors.Join(retErr, err)
+			}
 			return
 		}
 
@@ -274,6 +277,13 @@ func runTerminalAttach(
 				}
 			}
 			if err := writeOut("\x1b[?25h\x1b[0m"); err != nil {
+				retErr = errors.Join(retErr, err)
+			}
+			message := "\r\nDisconnected from session\r\n"
+			if sessionEnded.Load() {
+				message = "\r\nSession ended\r\n"
+			}
+			if err := writeOut(message); err != nil {
 				retErr = errors.Join(retErr, err)
 			}
 			return

@@ -359,7 +359,12 @@ func TestClientAttachForwardsInputResizeAndDetach(t *testing.T) {
 		t.Fatalf("raw lifecycle entered=%v restored=%v, want both true", entered, restored)
 	}
 
-	assertTerminalStatePreserved(t, output, 100, 30)
+	const message = "\r\nDetached from session\r\n"
+	beforeMessage, found := strings.CutSuffix(output, message)
+	if !found {
+		t.Fatalf("terminal output = %q, want suffix %q", output, message)
+	}
+	assertTerminalStatePreserved(t, beforeMessage, 100, 30)
 }
 
 func TestClientAttachDetachInstructionsReserveRowAndRenderHint(t *testing.T) {
@@ -416,6 +421,9 @@ func TestClientAttachDetachInstructionsReserveRowAndRenderHint(t *testing.T) {
 	}
 	if !strings.Contains(output, `detach: ctrl+\`) {
 		t.Fatalf("terminal output %q does not contain the detach hint", output)
+	}
+	if !strings.HasSuffix(output, "\r\nSession ended\r\n") {
+		t.Fatalf("terminal output = %q, want session-ended message after final state", output)
 	}
 }
 
@@ -1567,6 +1575,9 @@ func TestClientAttachDisconnectClearsDetachInstructionsWithoutReset(t *testing.T
 	}
 	if !strings.Contains(output[repaint:], "\x1b[?25h\x1b[0m") {
 		t.Fatalf("terminal output = %q, want cursor and style cleanup", output)
+	}
+	if !strings.HasSuffix(output, "\r\nDisconnected from session\r\n") {
+		t.Fatalf("terminal output = %q, want disconnect message after final state", output)
 	}
 }
 

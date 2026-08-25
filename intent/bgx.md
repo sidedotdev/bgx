@@ -31,7 +31,11 @@ intent_links:
       - transport.go:Bridge
       - client_attach.go:runTerminalAttach
       - client_attach_test.go:TestClientAttachReportsMalformedDaemonFrame
+      - client_attach_test.go:TestClientAttachForwardsInputResizeAndDetach
+      - client_attach_test.go:TestClientAttachDetachInstructionsReserveRowAndRenderHint
       - client_attach_test.go:TestClientAttachDisconnectClearsDetachInstructionsWithoutReset
+      - e2e/attach_test.go:TestAttachStreamsAndDetaches
+      - e2e/attach_test.go:TestAttachClosesOnSessionEnd
       - e2e/attach_errors_test.go:TestAttachDisconnectClearsDetachInstructionsWithoutReset
       - e2e/bridge_test.go:TestBridgeForwardsAttachProtocolVerbatim
       - e2e/bridge_test.go:TestAttachViaTransportBridgesRemoteSession
@@ -121,6 +125,7 @@ intent_links:
       - client_attach_test.go:shortWriteTerminal.attemptedWrite
       - client_attach_test.go:shortWriteTerminal.armShortWrites
       - client_attach_test.go:TestClientAttachForwardsInputResizeAndDetach
+      - client_attach_test.go:TestClientAttachDetachInstructionsReserveRowAndRenderHint
       - client_attach_test.go:TestClientAttachSkipsUnavailableSizeUntilValidResize
       - client_attach_test.go:TestClientAttachReportsActionableSizeError
       - client_attach_test.go:TestClientAttachDetachInstructionsSizeFailureRestoresDisplay
@@ -128,6 +133,7 @@ intent_links:
       - client_attach_test.go:TestClientAttachReportsStreamedTerminalShortWrite
       - client_attach_test.go:TestClientAttachConcurrentOutputAndResizeKeepsSnapshotConsistent
       - client_attach_test.go:TestClientAttachDisconnectClearsDetachInstructionsWithoutReset
+      - e2e/attach_errors_test.go:TestAttachDisconnectClearsDetachInstructionsWithoutReset
       - daemon/daemon.go:snapshot
       - daemon/attach.go:serveAttach
       - daemon/attach.go:attachWriter
