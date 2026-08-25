@@ -3,6 +3,7 @@ intent_links:
   - intent: "#tasks"
     code:
       - Justfile
+      - tasks_test.go:TestTaskRecipes
 ---
 # Tasks
 
