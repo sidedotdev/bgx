@@ -151,6 +151,66 @@ smoke_test() {
 	)
 }
 
+# prepare_release advances tag and prerelease creation only as far as necessary.
+# Existing local and remote tags must agree so resumption never rewrites a tag.
+# A return status of 2 means the release was already promoted.
+prepare_release() {
+	local tag="$1" target="$2"
+	local release_state="missing" viewed_release_state="" local_sha="" remote_sha=""
+
+	if viewed_release_state="$(gh release view "$tag" --json isPrerelease --jq '.isPrerelease' 2>/dev/null)"; then
+		release_state="$viewed_release_state"
+		case "$release_state" in
+			false)
+				echo "release.sh: $tag is already complete" >&2
+				return 2
+				;;
+			true) ;;
+			*) fail "unexpected release state for $tag: $release_state" ;;
+		esac
+	fi
+
+	local_sha="$(git -C "$REPO_ROOT" rev-parse --verify --quiet "refs/tags/${tag}^{commit}" 2>/dev/null || true)"
+	if ! remote_sha="$(
+		git -C "$REPO_ROOT" ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}" |
+			awk -v ref="refs/tags/$tag" '
+				$2 == ref { tag = $1 }
+				$2 == ref "^{}" { peeled = $1 }
+				END {
+					if (peeled != "") print peeled
+					else print tag
+				}
+			'
+	)"; then
+		fail "could not query remote tag $tag"
+	fi
+
+	if [ -n "$local_sha" ] && [ -n "$remote_sha" ] && [ "$local_sha" != "$remote_sha" ]; then
+		fail "local and remote tags for $tag refer to different commits"
+	fi
+
+	if [ -z "$local_sha" ]; then
+		if [ -n "$remote_sha" ]; then
+			echo "release.sh: fetching existing tag $tag" >&2
+			git -C "$REPO_ROOT" fetch origin "refs/tags/$tag:refs/tags/$tag" || return
+		else
+			echo "release.sh: tagging $target as $tag" >&2
+			git -C "$REPO_ROOT" tag "$tag" "$target" || return
+			local_sha="$(git -C "$REPO_ROOT" rev-parse "${tag}^{commit}")" || return
+		fi
+	fi
+
+	if [ -z "$remote_sha" ]; then
+		echo "release.sh: pushing tag $tag" >&2
+		git -C "$REPO_ROOT" push origin "refs/tags/$tag" || return
+	fi
+
+	if [ "$release_state" = "missing" ]; then
+		gh release create "$tag" --verify-tag --prerelease --generate-notes --title "$tag" || return
+	fi
+	return 0
+}
+
 main() {
 	local ref_or_tag="" target="" no_promote=false alpha=false list=false delete=false
 	while [ $# -gt 0 ]; do
@@ -206,16 +266,18 @@ main() {
 	fi
 	[ -n "$target" ] || target="main"
 
-	# Push the tag with git rather than letting `gh release create` create it:
-	# tags created through the API do not reliably emit the tag `push` event the
-	# workflow triggers on. Pushing also ships the target commit's objects, so an
-	# unpushed branch (e.g. under alpha verification) still builds. The
-	# pre-release is created right after so the workflow's upload step has a
-	# release to attach to long before it finishes building.
-	echo "release.sh: tagging $target as $tag and pushing" >&2
-	git -C "$REPO_ROOT" tag "$tag" "$target"
-	git -C "$REPO_ROOT" push origin "refs/tags/$tag"
-	gh release create "$tag" --verify-tag --prerelease --generate-notes --title "$tag"
+	# Pushing the tag directly emits the tag event the workflow depends on and
+	# also ships objects for an unpushed target branch.
+	local preparation_status
+	if prepare_release "$tag" "$target"; then
+		preparation_status=0
+	else
+		preparation_status=$?
+	fi
+	if [ "$preparation_status" -eq 2 ]; then
+		return 0
+	fi
+	[ "$preparation_status" -eq 0 ] || return "$preparation_status"
 
 	local sha
 	sha="$(git -C "$REPO_ROOT" rev-parse "$tag^{commit}")"

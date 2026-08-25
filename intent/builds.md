@@ -4,6 +4,7 @@ intent_links:
     code:
       - scripts/release.sh:list_runs
       - scripts/release.sh:delete_failed_prerelease
+      - scripts/release.sh:prepare_release
       - scripts/release.sh:main
       - release_script_test.go
   - intent: "#github-actions"

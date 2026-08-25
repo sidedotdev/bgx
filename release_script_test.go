@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -16,9 +17,25 @@ func runReleaseScript(t *testing.T, args ...string) (string, string, error) {
 
 	writeExecutable(t, filepath.Join(binDir, "git"), `#!/bin/sh
 printf 'git %s\n' "$*" >>"$COMMAND_LOG"
+if [ -n "${MOCK_GIT_FAIL:-}" ] && printf '%s\n' "$*" | grep -qF "$MOCK_GIT_FAIL"; then
+	exit 42
+fi
 case "$*" in
-	*rev-parse*"^{commit}"*) printf '%s\n' "${MOCK_SHA:-0123456789abcdef}" ;;
-	*"tag --list"*) printf '%s\n' "${MOCK_LOCAL_TAG:-}" ;;
+	*"tag --list"*)
+		printf '%s\n' "${MOCK_LOCAL_TAG:-}"
+		;;
+	*rev-parse*"--verify --quiet refs/tags/"*"^{commit}"*)
+		[ "${MOCK_LOCAL_TAG_EXISTS:-false}" = true ] || exit 1
+		printf '%s\n' "${MOCK_SHA:-0123456789abcdef}"
+		;;
+	*ls-remote*)
+		if [ "${MOCK_REMOTE_TAG_EXISTS:-false}" = true ]; then
+			printf '%s\t%s\n' "${MOCK_REMOTE_SHA:-${MOCK_SHA:-0123456789abcdef}}" "${MOCK_REMOTE_TAG_REF:-refs/tags/v1.2.3}"
+		fi
+		;;
+	*rev-parse*"^{commit}"*)
+		printf '%s\n' "${MOCK_SHA:-0123456789abcdef}"
+		;;
 esac
 `)
 
@@ -29,7 +46,21 @@ case "$*" in
 		printf '%s\n' "${MOCK_RUN_LIST:-123}"
 		;;
 	"release view "*"--json isPrerelease"*)
-		printf '%s\n' "${MOCK_PRERELEASE:-true}"
+		if [ -n "${MOCK_PRERELEASE:-}" ]; then
+			printf '%s\n' "$MOCK_PRERELEASE"
+		else
+			case "${MOCK_RELEASE_STATE:-prerelease}" in
+				missing) exit 1 ;;
+				prerelease) printf 'true\n' ;;
+				complete) printf 'false\n' ;;
+			esac
+		fi
+		;;
+	"release view "*"--json assets"*)
+		printf '%s\n' "${MOCK_ASSETS:-bgx-linux-amd64
+bgx-linux-arm64
+bgx-darwin-arm64
+bgx-darwin-amd64}"
 		;;
 	"run view "*"--json status,conclusion"*)
 		printf '%s\n' "${MOCK_RUN_RESULT:-completed	failure}"
@@ -139,5 +170,189 @@ func TestReleaseScriptDeleteRequiresRefOrTag(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "--delete requires a ref or tag") {
 		t.Fatalf("unexpected stderr:\n%s", stderr)
+	}
+}
+func TestReleaseScriptPreparesFreshRelease(t *testing.T) {
+	t.Setenv("MOCK_RELEASE_STATE", "missing")
+
+	output, stderr, err := runReleaseScript(t, "v1.2.3")
+	if err != nil {
+		t.Fatalf("release script failed: %v\nstderr:\n%s", err, stderr)
+	}
+
+	for _, command := range []string{
+		"tag v1.2.3 main",
+		"push origin refs/tags/v1.2.3",
+		"release create v1.2.3 --verify-tag --prerelease",
+		"run watch 123 --exit-status",
+		"release edit v1.2.3 --prerelease=false --latest",
+	} {
+		if !strings.Contains(output, command) {
+			t.Errorf("missing command %q in:\n%s", command, output)
+		}
+	}
+}
+func TestReleaseScriptResumesIncompleteRelease(t *testing.T) {
+	tests := []struct {
+		name         string
+		localTag     bool
+		remoteTag    bool
+		releaseState string
+		want         []string
+		doNotWant    []string
+	}{
+		{
+			name:         "pushes existing local tag",
+			localTag:     true,
+			releaseState: "missing",
+			want: []string{
+				"push origin refs/tags/v1.2.3",
+				"release create v1.2.3 --verify-tag --prerelease",
+			},
+			doNotWant: []string{"tag v1.2.3 main"},
+		},
+		{
+			name:         "fetches existing remote tag",
+			remoteTag:    true,
+			releaseState: "missing",
+			want: []string{
+				"fetch origin refs/tags/v1.2.3:refs/tags/v1.2.3",
+				"release create v1.2.3 --verify-tag --prerelease",
+			},
+			doNotWant: []string{
+				"tag v1.2.3 main",
+				"push origin refs/tags/v1.2.3",
+			},
+		},
+		{
+			name:         "continues existing prerelease",
+			localTag:     true,
+			remoteTag:    true,
+			releaseState: "prerelease",
+			want: []string{
+				"run watch 123 --exit-status",
+				"release edit v1.2.3 --prerelease=false --latest",
+			},
+			doNotWant: []string{
+				"tag v1.2.3 main",
+				"push origin refs/tags/v1.2.3",
+				"release create v1.2.3",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("MOCK_LOCAL_TAG_EXISTS", strings.ToLower(strconv.FormatBool(tt.localTag)))
+			t.Setenv("MOCK_REMOTE_TAG_EXISTS", strings.ToLower(strconv.FormatBool(tt.remoteTag)))
+			t.Setenv("MOCK_RELEASE_STATE", tt.releaseState)
+
+			output, stderr, err := runReleaseScript(t, "v1.2.3")
+			if err != nil {
+				t.Fatalf("release script failed: %v\nstderr:\n%s", err, stderr)
+			}
+			for _, command := range tt.want {
+				if !strings.Contains(output, command) {
+					t.Errorf("missing command %q in:\n%s", command, output)
+				}
+			}
+			for _, command := range tt.doNotWant {
+				if strings.Contains(output, command) {
+					t.Errorf("unexpected command %q in:\n%s", command, output)
+				}
+			}
+		})
+	}
+}
+func TestReleaseScriptTreatsCompletedReleaseAsNoOp(t *testing.T) {
+	t.Setenv("MOCK_RELEASE_STATE", "complete")
+
+	output, stderr, err := runReleaseScript(t, "v1.2.3")
+	if err != nil {
+		t.Fatalf("release script failed: %v\nstderr:\n%s", err, stderr)
+	}
+
+	for _, command := range []string{
+		"tag v1.2.3 main",
+		"push origin refs/tags/v1.2.3",
+		"release create v1.2.3",
+		"run watch",
+		"release edit",
+	} {
+		if strings.Contains(output, command) {
+			t.Errorf("completed release ran command %q:\n%s", command, output)
+		}
+	}
+	if !strings.Contains(stderr, "already complete") {
+		t.Fatalf("expected completed release message, got:\n%s", stderr)
+	}
+}
+func TestReleaseScriptRefusesDivergentTags(t *testing.T) {
+	t.Setenv("MOCK_LOCAL_TAG_EXISTS", "true")
+	t.Setenv("MOCK_REMOTE_TAG_EXISTS", "true")
+	t.Setenv("MOCK_REMOTE_SHA", "fedcba9876543210")
+	t.Setenv("MOCK_RELEASE_STATE", "missing")
+
+	output, stderr, err := runReleaseScript(t, "v1.2.3")
+	if err == nil {
+		t.Fatal("expected divergent local and remote tags to fail")
+	}
+	if !strings.Contains(stderr, "refer to different commits") {
+		t.Fatalf("unexpected stderr:\n%s", stderr)
+	}
+	for _, command := range []string{
+		"push origin refs/tags/v1.2.3",
+		"release create v1.2.3",
+		"run watch",
+	} {
+		if strings.Contains(output, command) {
+			t.Errorf("divergent tags ran command %q:\n%s", command, output)
+		}
+	}
+}
+func TestReleaseScriptStopsWhenTagPreparationFails(t *testing.T) {
+	tests := []struct {
+		name       string
+		failingGit string
+		localTag   bool
+		remoteTag  bool
+	}{
+		{
+			name:       "fetch",
+			failingGit: "fetch origin",
+			remoteTag:  true,
+		},
+		{
+			name:       "tag creation",
+			failingGit: "tag v1.2.3 main",
+		},
+		{
+			name:       "created tag resolution",
+			failingGit: "rev-parse v1.2.3^{commit}",
+		},
+		{
+			name:       "push",
+			failingGit: "push origin refs/tags/v1.2.3",
+			localTag:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("MOCK_RELEASE_STATE", "missing")
+			t.Setenv("MOCK_GIT_FAIL", tt.failingGit)
+			t.Setenv("MOCK_LOCAL_TAG_EXISTS", strconv.FormatBool(tt.localTag))
+			t.Setenv("MOCK_REMOTE_TAG_EXISTS", strconv.FormatBool(tt.remoteTag))
+
+			output, _, err := runReleaseScript(t, "v1.2.3")
+			if err == nil {
+				t.Fatalf("expected failed %s command to stop release preparation", tt.failingGit)
+			}
+			for _, command := range []string{"release create v1.2.3", "run watch"} {
+				if strings.Contains(output, command) {
+					t.Errorf("failed preparation continued with %q:\n%s", command, output)
+				}
+			}
+		})
 	}
 }
