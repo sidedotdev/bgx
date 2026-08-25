@@ -25,6 +25,8 @@ all tests have passed, and builds have been uploaded, unless opted out.
 A release script invokes `gh` to create a release, given a ref or tag:
 
 - Auto-incrementing minor tag using HEAD of main if not specified
+- Resumable: if the specified tag or release already exists but it isn't
+  complete, resumes release process from the appropriate point
 - Waits for the workflow to complete
 - On failure, syncs detailed logs from github actions to an in-repo gitignored
 directory, enabling grep debugging.
