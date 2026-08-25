@@ -8,7 +8,8 @@ intent_links:
 
 Tasks are orchestrated via a Justfile.
 
-2 tasks exist:
+Task list:
 
-- build: local build and install
+- build: local build
+- install: local install
 - release: invokes release script
