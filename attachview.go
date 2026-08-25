@@ -35,23 +35,29 @@ type attachView struct {
 	stopped chan struct{}
 	errs    chan error
 
-	mu       sync.Mutex
-	term     *vt.Terminal
-	cols     uint16
-	rows     uint16
-	reserved bool
-	closed   bool
+	mu                     sync.Mutex
+	term                   *vt.Terminal
+	cols                   uint16
+	rows                   uint16
+	showDetachInstructions bool
+	reserved               bool
+	closed                 bool
 }
 
 // newAttachView starts a view for a physical terminal of the given size. The
 // returned view must be closed to stop painting.
-func newAttachView(write func(string) error, cols, physicalRows uint16) (*attachView, error) {
+func newAttachView(
+	write func(string) error,
+	cols, physicalRows uint16,
+	showDetachInstructions bool,
+) (*attachView, error) {
 	v := &attachView{
-		write:   write,
-		wake:    make(chan struct{}, 1),
-		done:    make(chan struct{}),
-		stopped: make(chan struct{}),
-		errs:    make(chan error, 1),
+		write:                  write,
+		wake:                   make(chan struct{}, 1),
+		done:                   make(chan struct{}),
+		stopped:                make(chan struct{}),
+		errs:                   make(chan error, 1),
+		showDetachInstructions: showDetachInstructions,
 	}
 	if _, err := v.setSize(cols, physicalRows); err != nil {
 		return nil, err
@@ -62,13 +68,13 @@ func newAttachView(write func(string) error, cols, physicalRows uint16) (*attach
 
 // setSize adapts the view to the physical terminal size and reports the row
 // count to advertise to the session. The bottom line is reserved for the hint
-// whenever the terminal has room for both it and the session.
+// whenever requested and the terminal has room for both it and the session.
 func (v *attachView) setSize(cols, physicalRows uint16) (uint16, error) {
 	if cols == 0 || physicalRows == 0 {
 		return 0, nil
 	}
 	rows := physicalRows
-	reserved := physicalRows > 1
+	reserved := v.showDetachInstructions && physicalRows > 1
 	if reserved {
 		rows--
 	}

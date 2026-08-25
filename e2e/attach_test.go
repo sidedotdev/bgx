@@ -176,9 +176,37 @@ func TestAttachStreamsAndDetaches(t *testing.T) {
 		t.Fatalf("attach client wait: %v", err)
 	}
 
-	// Detaching restores the local terminal with a full reset (ESC c).
-	if !strings.Contains(output(), "\x1bc") {
-		t.Fatalf("detach did not reset the terminal; got %q", output())
+	emulated, err := lg.NewTerminal(lg.WithSize(80, 24))
+	if err != nil {
+		t.Fatalf("NewTerminal: %v", err)
+	}
+	defer emulated.Close()
+	emulated.VTWrite([]byte(strings.Repeat("older shell output\r\n", 30)))
+	emulated.VTWrite([]byte("\x1b[32mshell prompt> draft\x1b[5D"))
+
+	format := func() string {
+		formatter, err := lg.NewFormatter(
+			emulated,
+			lg.WithFormatterFormat(lg.FormatterFormatVT),
+			lg.WithFormatterExtraStyle(true),
+			lg.WithFormatterExtraCursor(true),
+		)
+		if err != nil {
+			t.Fatalf("NewFormatter: %v", err)
+		}
+		defer formatter.Close()
+		state, err := formatter.Format()
+		if err != nil {
+			t.Fatalf("Format: %v", err)
+		}
+		return string(state)
+	}
+
+	before := format()
+	emulated.VTWrite([]byte(output()))
+	after := format()
+	if after != before {
+		t.Fatalf("visible terminal state and cursor after detach differ from pre-attach state:\nbefore %q\nafter  %q\nattach output %q", before, after, output())
 	}
 
 	info := decodeJSON(t, bgxIn(t, dir, "info", "att").stdout)
@@ -624,18 +652,9 @@ func TestAttachClosesOnSessionEnd(t *testing.T) {
 		t.Fatalf("attach client wait: %v", err)
 	}
 
-	// The initial state starts with RIS, while session teardown resets only the
-	// cursor (show cursor + reset SGR).
-	out := output()
-	helloAt := strings.Index(out, "hello")
-	if helloAt < 0 || !strings.Contains(out[:helloAt], "\x1bc") {
-		t.Fatalf("initial terminal state did not begin with a full reset; got %q", out)
-	}
-	if strings.Contains(out[helloAt:], "\x1bc") {
-		t.Fatalf("session end performed a full terminal reset; got %q", out)
-	}
-	if !strings.Contains(out, "\x1b[?25h\x1b[0m") {
-		t.Fatalf("session end did not reset the cursor; got %q", out)
+	rendered := renderScreen(t, output()+"X", 80, 24)
+	if !strings.Contains(strings.Join(rendered, "\n"), "helloX") {
+		t.Fatalf("final session output or cursor was not preserved; screen=%q output=%q", rendered, output())
 	}
 }
 

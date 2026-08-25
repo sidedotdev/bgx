@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	lg "github.com/ehsanul/libghostty-vt-static"
 	bgx "github.com/sidedotdev/bgx"
 	"github.com/sidedotdev/bgx/daemon"
 )
@@ -352,10 +354,12 @@ func TestClientAttachForwardsInputResizeAndDetach(t *testing.T) {
 		t.Fatal("Attach did not return after detach")
 	}
 
-	_, entered, restored := terminal.snapshot()
+	output, entered, restored := terminal.snapshot()
 	if !entered || !restored {
 		t.Fatalf("raw lifecycle entered=%v restored=%v, want both true", entered, restored)
 	}
+
+	assertTerminalStatePreserved(t, output, 100, 30)
 }
 
 func TestClientAttachDetachInstructionsReserveRowAndRenderHint(t *testing.T) {
@@ -764,7 +768,6 @@ func TestClientAttachSkipsUnavailableSizeUntilValidResize(t *testing.T) {
 			err  error
 		}{
 			{err: bgx.ErrTerminalSizeUnavailable},
-			{err: bgx.ErrTerminalSizeUnavailable},
 			{cols: 100, rows: 30},
 		},
 	}
@@ -783,7 +786,7 @@ func TestClientAttachSkipsUnavailableSizeUntilValidResize(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("resize event was not consumed")
 	}
-	expectResizeFrame(t, frames, 30, 100)
+	expectResizeFrame(t, frames, 29, 100)
 
 	if _, err := inputWriter.Write([]byte{0x1C}); err != nil {
 		t.Fatalf("write detach key: %v", err)
@@ -819,9 +822,7 @@ func TestClientAttachReportsActionableSizeError(t *testing.T) {
 	if !entered || !restored {
 		t.Fatalf("raw lifecycle entered=%v restored=%v, want both true", entered, restored)
 	}
-	if !strings.Contains(output, "\x1b[2J\x1b[H\x1bc") {
-		t.Fatalf("terminal output = %q, want clear followed by reset", output)
-	}
+	assertTerminalStatePreserved(t, output, 80, 24)
 }
 
 func TestClientAttachDetachInstructionsSizeFailureRestoresDisplay(t *testing.T) {
@@ -845,9 +846,7 @@ func TestClientAttachDetachInstructionsSizeFailureRestoresDisplay(t *testing.T) 
 	if !entered || !restored {
 		t.Fatalf("raw lifecycle entered=%v restored=%v, want both true", entered, restored)
 	}
-	if !strings.Contains(output, "\x1b[2J\x1b[H\x1bc") {
-		t.Fatalf("terminal output = %q, want clear followed by reset", output)
-	}
+	assertTerminalStatePreserved(t, output, 80, 24)
 }
 
 type blockingResizeTerminal struct {
@@ -1172,26 +1171,55 @@ func TestClientAttachContinuesAfterResizeEventsClose(t *testing.T) {
 type shortWriteTerminal struct {
 	*testTerminal
 
-	mu         sync.Mutex
-	shortAfter int
-	writes     int
+	mu            sync.Mutex
+	short         bool
+	writeObserved chan struct{}
+	attempts      []string
 }
 
 func (t *shortWriteTerminal) Write(p []byte) (int, error) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.writes++
-	if t.writes >= t.shortAfter {
-		return len(p) - 1, nil
+	t.attempts = append(t.attempts, string(p))
+	short := t.short
+	t.mu.Unlock()
+	if t.writeObserved != nil {
+		select {
+		case t.writeObserved <- struct{}{}:
+		default:
+		}
 	}
-	return len(p), nil
+	if short {
+		n := len(p) - 1
+		if _, err := t.testTerminal.Write(p[:n]); err != nil {
+			return 0, err
+		}
+		return n, nil
+	}
+	return t.testTerminal.Write(p)
+}
+
+func (t *shortWriteTerminal) attemptedWrite(want string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, attempt := range t.attempts {
+		if attempt == want {
+			return true
+		}
+	}
+	return false
+}
+
+func (t *shortWriteTerminal) armShortWrites() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.short = true
 }
 
 func TestClientAttachReportsInitialTerminalShortWrite(t *testing.T) {
 	stream := newResizeWriteFailureStream(errors.New("resize should not be reached"))
 	terminal := &shortWriteTerminal{
 		testTerminal: newTestTerminal(bytes.NewReader(nil)),
-		shortAfter:   1,
+		short:        true,
 	}
 	dial := func(context.Context) (io.ReadWriteCloser, error) {
 		return stream, nil
@@ -1200,6 +1228,9 @@ func TestClientAttachReportsInitialTerminalShortWrite(t *testing.T) {
 	err := bgx.NewClient(dial).Attach(context.Background(), terminal)
 	if !errors.Is(err, io.ErrShortWrite) {
 		t.Fatalf("Attach error = %v, want short write", err)
+	}
+	if !terminal.attemptedWrite("\x1b[?1049l") {
+		t.Fatal("Attach did not attempt to restore the normal screen after partial entry")
 	}
 }
 
@@ -1224,8 +1255,8 @@ func TestClientAttachReportsStreamedTerminalShortWrite(t *testing.T) {
 		}
 	})
 	terminal := &shortWriteTerminal{
-		testTerminal: newTestTerminal(&contextPipeReader{inputReader}),
-		shortAfter:   2,
+		testTerminal:  newTestTerminal(&contextPipeReader{inputReader}),
+		writeObserved: make(chan struct{}, 4),
 	}
 
 	result := make(chan error, 1)
@@ -1234,6 +1265,15 @@ func TestClientAttachReportsStreamedTerminalShortWrite(t *testing.T) {
 	}()
 
 	expectResizeFrame(t, frames, 24, 80)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-terminal.writeObserved:
+		case <-time.After(time.Second):
+			t.Fatal("initial attach rendering did not complete")
+		}
+	}
+	terminal.armShortWrites()
+
 	if err := daemon.WriteFrame(serverConn, daemon.FrameOutput, []byte("output")); err != nil {
 		t.Fatalf("write output frame: %v", err)
 	}
@@ -1520,10 +1560,213 @@ func TestClientAttachDisconnectClearsDetachInstructionsWithoutReset(t *testing.T
 	if strings.Contains(output, "\x1bc") {
 		t.Fatalf("terminal output = %q, remote disconnect must not fully reset terminal", output)
 	}
-	if !strings.Contains(output, "\x1b7\x1b[r\x1b[24;1H\x1b[2K\x1b8") {
-		t.Fatalf("terminal output = %q, want reserved detach row cleared", output)
+	leaveAlt := strings.LastIndex(output, "\x1b[?1049l")
+	repaint := strings.LastIndex(output, "\x1b[2J\x1b[H\x1b[0m")
+	if leaveAlt < 0 || repaint < leaveAlt {
+		t.Fatalf("terminal output = %q, want final session state repainted after leaving alternate screen", output)
 	}
-	if !strings.Contains(output, "\x1b[?25h\x1b[0m") {
+	if !strings.Contains(output[repaint:], "\x1b[?25h\x1b[0m") {
 		t.Fatalf("terminal output = %q, want cursor and style cleanup", output)
+	}
+}
+
+func assertTerminalStatePreserved(
+	t *testing.T,
+	output string,
+	cols, rows uint16,
+) {
+	t.Helper()
+	emulated, err := lg.NewTerminal(
+		lg.WithSize(cols, rows),
+		lg.WithMaxScrollback(uint(rows)+20),
+	)
+	if err != nil {
+		t.Fatalf("NewTerminal: %v", err)
+	}
+	defer emulated.Close()
+	for i := 0; i < int(rows)+10; i++ {
+		emulated.VTWrite([]byte(fmt.Sprintf("history-%03d\r\n", i)))
+	}
+	emulated.VTWrite([]byte("\x1b[32mshell prompt> draft\x1b[5D"))
+
+	scrollbackRows, err := emulated.ScrollbackRows()
+	if err != nil {
+		t.Fatalf("ScrollbackRows: %v", err)
+	}
+	if scrollbackRows == 0 {
+		t.Fatal("test setup did not create terminal scrollback")
+	}
+	// This binding measures positive deltas away from the live bottom.
+	emulated.ScrollViewportDelta(5)
+	viewportActive, err := emulated.ViewportActive()
+	if err != nil {
+		t.Fatalf("ViewportActive: %v", err)
+	}
+	if !viewportActive {
+		t.Fatal("test setup did not move the viewport away from the bottom")
+	}
+
+	type terminalState struct {
+		visible        string
+		history        string
+		scrollbackRows uint
+		scrollbar      lg.Scrollbar
+		viewportActive bool
+	}
+	snapshot := func() terminalState {
+		scrollbarBeforeSelection, err := emulated.Scrollbar()
+		if err != nil {
+			t.Fatalf("Scrollbar before selection: %v", err)
+		}
+		viewportBeforeSelection, err := emulated.ViewportActive()
+		if err != nil {
+			t.Fatalf("ViewportActive before selection: %v", err)
+		}
+		selection, err := emulated.SelectAll()
+		if err != nil {
+			t.Fatalf("SelectAll: %v", err)
+		}
+		history, err := emulated.SelectionFormatString(
+			lg.WithSelection(selection),
+			lg.WithSelectionFormat(lg.FormatterFormatPlain),
+			lg.WithSelectionTrim(false),
+			lg.WithSelectionUnwrap(false),
+		)
+		if err != nil {
+			t.Fatalf("SelectionFormatString: %v", err)
+		}
+		scrollbarAfterSelection, err := emulated.Scrollbar()
+		if err != nil {
+			t.Fatalf("Scrollbar after selection: %v", err)
+		}
+		viewportAfterSelection, err := emulated.ViewportActive()
+		if err != nil {
+			t.Fatalf("ViewportActive after selection: %v", err)
+		}
+		if scrollbarAfterSelection != scrollbarBeforeSelection ||
+			viewportAfterSelection != viewportBeforeSelection {
+			t.Fatal("formatting terminal history changed the viewport")
+		}
+
+		formatter, err := lg.NewFormatter(
+			emulated,
+			lg.WithFormatterFormat(lg.FormatterFormatVT),
+			lg.WithFormatterExtraStyle(true),
+			lg.WithFormatterExtraCursor(true),
+		)
+		if err != nil {
+			t.Fatalf("NewFormatter: %v", err)
+		}
+		visible, err := formatter.Format()
+		formatter.Close()
+		if err != nil {
+			t.Fatalf("Format: %v", err)
+		}
+		scrollbackRows, err := emulated.ScrollbackRows()
+		if err != nil {
+			t.Fatalf("ScrollbackRows: %v", err)
+		}
+		scrollbar, err := emulated.Scrollbar()
+		if err != nil {
+			t.Fatalf("Scrollbar: %v", err)
+		}
+		viewportActive, err := emulated.ViewportActive()
+		if err != nil {
+			t.Fatalf("ViewportActive: %v", err)
+		}
+		return terminalState{
+			visible:        string(visible),
+			history:        history,
+			scrollbackRows: scrollbackRows,
+			scrollbar:      scrollbar,
+			viewportActive: viewportActive,
+		}
+	}
+
+	before := snapshot()
+	emulated.VTWrite([]byte(output))
+	after := snapshot()
+	if after != before {
+		t.Fatalf("terminal state after attach differs from pre-attach state:\nbefore %#v\nafter  %#v\nattach output %q", before, after, output)
+	}
+}
+
+// TestClientAttachConcurrentOutputAndResizeKeepsSnapshotConsistent interleaves
+// streamed output with terminal resizes and verifies the session-end repaint
+// still reflects the last displayed output, i.e. the display model and the
+// snapshot model stayed in lockstep.
+func TestClientAttachConcurrentOutputAndResizeKeepsSnapshotConsistent(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() {
+		if err := serverConn.Close(); err != nil {
+			t.Errorf("close attach server: %v", err)
+		}
+	})
+	dial := func(context.Context) (io.ReadWriteCloser, error) {
+		return clientConn, nil
+	}
+	frames := attachFrameServer(t, serverConn)
+
+	inputReader, inputWriter := io.Pipe()
+	t.Cleanup(func() {
+		if err := inputReader.Close(); err != nil {
+			t.Errorf("close terminal input reader: %v", err)
+		}
+		if err := inputWriter.Close(); err != nil {
+			t.Errorf("close terminal input writer: %v", err)
+		}
+	})
+	terminal := newTestTerminal(&contextPipeReader{inputReader})
+
+	result := make(chan error, 1)
+	go func() {
+		result <- bgx.NewClient(dial).Attach(context.Background(), terminal)
+	}()
+
+	// The initial resize frame confirms the handshake ack has been written, so
+	// the server's output frames below cannot interleave with it on the pipe.
+	nextFrame(t, frames)
+	go func() {
+		for range frames {
+		}
+	}()
+
+	sizes := []struct{ cols, rows uint16 }{{100, 30}, {60, 20}, {80, 24}}
+	for i := 0; i < 120; i++ {
+		payload := []byte(fmt.Sprintf("line-%03d\r\n", i))
+		if err := daemon.WriteFrame(serverConn, daemon.FrameOutput, payload); err != nil {
+			t.Fatalf("write output frame: %v", err)
+		}
+		size := sizes[i%len(sizes)]
+		terminal.setSize(size.cols, size.rows)
+		select {
+		case terminal.resize <- struct{}{}:
+		case <-time.After(time.Second):
+			t.Fatal("resize event was not consumed")
+		}
+	}
+	if err := daemon.WriteFrame(serverConn, daemon.FrameOutput, []byte("final-marker")); err != nil {
+		t.Fatalf("write final output frame: %v", err)
+	}
+	if err := daemon.WriteFrame(serverConn, daemon.FrameEnded, nil); err != nil {
+		t.Fatalf("write ended frame: %v", err)
+	}
+
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("Attach: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Attach did not return after session end")
+	}
+
+	output, _, _ := terminal.snapshot()
+	leaveAlt := strings.LastIndex(output, "\x1b[?1049l")
+	if leaveAlt < 0 {
+		t.Fatalf("attach never left the alternate screen; got %q", output)
+	}
+	if !strings.Contains(output[leaveAlt:], "final-marker") {
+		t.Fatalf("final snapshot diverged from displayed session output; got %q", output[leaveAlt:])
 	}
 }

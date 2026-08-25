@@ -107,6 +107,27 @@ intent_links:
       - e2e/attach_test.go
   - intent: "#attach"
     code:
+      - attachmodels.go:attachModels
+      - attachmodels_test.go:TestAttachModelsResizeCannotInterleaveOutput
+      - attachmodels_test.go:TestAttachModelsOutputCannotInterleaveResize
+      - attachview.go:attachView
+      - attachview.go:newAttachView
+      - attachview.go:attachView.setSize
+      - attachview_test.go:TestAttachViewCloseRetainsAsynchronousPaintError
+      - client_attach.go:runTerminalAttach
+      - client_attach_test.go:assertTerminalStatePreserved
+      - client_attach_test.go:shortWriteTerminal
+      - client_attach_test.go:shortWriteTerminal.Write
+      - client_attach_test.go:shortWriteTerminal.attemptedWrite
+      - client_attach_test.go:shortWriteTerminal.armShortWrites
+      - client_attach_test.go:TestClientAttachForwardsInputResizeAndDetach
+      - client_attach_test.go:TestClientAttachSkipsUnavailableSizeUntilValidResize
+      - client_attach_test.go:TestClientAttachReportsActionableSizeError
+      - client_attach_test.go:TestClientAttachDetachInstructionsSizeFailureRestoresDisplay
+      - client_attach_test.go:TestClientAttachReportsInitialTerminalShortWrite
+      - client_attach_test.go:TestClientAttachReportsStreamedTerminalShortWrite
+      - client_attach_test.go:TestClientAttachConcurrentOutputAndResizeKeepsSnapshotConsistent
+      - client_attach_test.go:TestClientAttachDisconnectClearsDetachInstructionsWithoutReset
       - daemon/daemon.go:snapshot
       - daemon/attach.go:serveAttach
       - daemon/attach.go:attachWriter
@@ -114,6 +135,7 @@ intent_links:
       - daemon/daemon_test.go:TestAttachSnapshotStreamCoversEntireOutput
       - daemon/daemon_test.go:TestSlowClientResyncsInsteadOfDisconnect
       - daemon/daemon_test.go:TestSessionEndDeliversOutputThenCloses
+      - e2e/attach_test.go:TestAttachStreamsAndDetaches
       - e2e/attach_test.go:TestAttachClosesOnSessionEnd
 ---
 

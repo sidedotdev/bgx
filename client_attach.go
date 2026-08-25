@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 
 	"github.com/sidedotdev/bgx/daemon"
+	"github.com/sidedotdev/bgx/vt"
 )
 
 type attachConfig struct {
@@ -231,9 +232,13 @@ func runTerminalAttach(
 		return nil
 	}
 
-	if err := writeOut("\x1b[2J\x1b[H"); err != nil {
-		return err
+	screen, err := vt.New(vt.DefaultCols, vt.DefaultRows)
+	if err != nil {
+		return fmt.Errorf("attach: initialize terminal state: %w", err)
 	}
+	defer screen.Close()
+
+	models := &attachModels{screen: screen}
 
 	var view *attachView
 	var detached, sessionEnded atomic.Bool
@@ -244,12 +249,28 @@ func runTerminalAttach(
 				retErr = errors.Join(retErr, err)
 			}
 		}
-		if (sessionEnded.Load() || remoteStreamTerminated) && !detached.Load() {
-			if view != nil {
-				if row := view.reservedRow(); row > 0 {
-					if err := writeOut(fmt.Sprintf("\x1b7\x1b[r\x1b[%d;1H\x1b[2K\x1b8", row)); err != nil {
-						retErr = errors.Join(retErr, err)
-					}
+
+		if detached.Load() {
+			if err := writeOut("\x1b[?1049l"); err != nil {
+				retErr = errors.Join(retErr, err)
+			}
+			return
+		}
+
+		if sessionEnded.Load() || remoteStreamTerminated {
+			snapshot, err := models.snapshot()
+			if err != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("attach: render final terminal state: %w", err))
+			}
+			if err := writeOut("\x1b[?1049l"); err != nil {
+				retErr = errors.Join(retErr, err)
+				return
+			}
+			if len(snapshot) > 0 {
+				if err := writeOut("\x1b[2J\x1b[H\x1b[0m"); err != nil {
+					retErr = errors.Join(retErr, err)
+				} else if err := writeBytes(snapshot); err != nil {
+					retErr = errors.Join(retErr, err)
 				}
 			}
 			if err := writeOut("\x1b[?25h\x1b[0m"); err != nil {
@@ -257,23 +278,26 @@ func runTerminalAttach(
 			}
 			return
 		}
-		if err := writeOut("\x1bc"); err != nil {
+
+		if err := writeOut("\x1b[?1049l"); err != nil {
 			retErr = errors.Join(retErr, err)
 		}
 	}()
 
-	if cfg.showDetachInstructions {
-		cols, rows, err := terminal.Size()
-		if err != nil && !errors.Is(err, ErrTerminalSizeUnavailable) {
-			return fmt.Errorf("attach: read terminal size: %w", err)
-		}
-		if err == nil && cols > 0 && rows > 0 {
-			view, err = newAttachView(writeOut, cols, rows)
-			if err != nil {
-				return err
-			}
-		}
+	if err := writeOut("\x1b[?1049h\x1b[2J\x1b[H"); err != nil {
+		return err
 	}
+
+	view, err = newAttachView(
+		writeOut,
+		vt.DefaultCols,
+		vt.DefaultRows,
+		cfg.showDetachInstructions,
+	)
+	if err != nil {
+		return err
+	}
+	models.view = view
 
 	var writeMu sync.Mutex
 	send := func(tag daemon.FrameTag, payload []byte) error {
@@ -295,14 +319,12 @@ func runTerminalAttach(
 		if cols == 0 || rows == 0 {
 			return nil
 		}
-		if view != nil {
-			rows, err = view.setSize(cols, rows)
-			if err != nil {
-				return err
-			}
-			if rows == 0 {
-				return nil
-			}
+		rows, err = models.applyResize(cols, rows)
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			return nil
 		}
 		return send(daemon.FrameResize, daemon.EncodeResize(rows, cols))
 	}
@@ -336,11 +358,7 @@ func runTerminalAttach(
 			}
 			switch tag {
 			case daemon.FrameOutput:
-				if view != nil {
-					err = view.feed(payload)
-				} else {
-					err = writeBytes(payload)
-				}
+				err = models.applyOutput(payload)
 			case daemon.FrameResize:
 				err = sendSize()
 			case daemon.FrameEnded:
@@ -420,6 +438,16 @@ func runTerminalAttach(
 		result = err
 	}
 
+	ctxErr := ctx.Err()
+	shuttingDown := ctxErr != nil
+	if shuttingDown {
+		selectedErr := withoutExpectedAttachShutdownErrors(result, true)
+		result = ctxErr
+		if selectedErr != nil {
+			result = errors.Join(result, selectedErr)
+		}
+	}
+
 	joinWorkerError := func(err error, shuttingDown bool) {
 		err = withoutExpectedAttachShutdownErrors(err, shuttingDown)
 		if err != nil {
@@ -432,7 +460,7 @@ func runTerminalAttach(
 		}
 		select {
 		case err := <-worker:
-			joinWorkerError(err, false)
+			joinWorkerError(err, shuttingDown)
 			*done = true
 		default:
 		}
@@ -440,7 +468,7 @@ func runTerminalAttach(
 
 	collectReady(frameErr, &frameDone)
 	collectReady(inputErr, &inputDone)
-	remoteStreamTerminated = frameDone
+	remoteStreamTerminated = frameDone && !shuttingDown
 
 	stopAttach()
 	closeStream()
