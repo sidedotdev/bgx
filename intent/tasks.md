@@ -1,3 +1,9 @@
+---
+intent_links:
+  - intent: "#tasks"
+    code:
+      - Justfile
+---
 # Tasks
 
 Tasks are orchestrated via a Justfile.
