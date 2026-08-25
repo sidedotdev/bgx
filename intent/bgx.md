@@ -247,8 +247,9 @@ But is customized for our needs:
      in place. Prints a one line message saying "Detached from session".
    - Closes automatically when session ends or disconnects. Acts like detach,
      resetting the terminal state and restoring the non-session scroll history,
-     but it also reprints the final terminal state of the session, and then a
-     one-line message about what happened.
+     but it also reprints the final terminal state of the session (up to the
+     point the session wrote to, i.e. drop empty lines never touched at the
+     end), and then a one-line message about what happened.
    - Showing detach instructions means a line of the terminal is reserved by the
      client for showing how to detach.
      - This line is cleared when session ends or disconnects.
