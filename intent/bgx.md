@@ -231,34 +231,9 @@ But is customized for our needs:
    - Any still-attached clients will also receive all such output before closing
      automatically
 - history <id>
-- attach [--ssh <host>] <id> [--show-detach-instructions] [--via <cmd...>]
-   - When initiated, detects if the session has already ended or doesn't exist,
-     outputting the appropriate error for each case
-   - Attaches to session, outputs "current" rendered terminal state
-     (specifically: the most recent available ground and rune boundary state)
-     and continues to update it by streaming raw output since that state
-   - Clients that cannot keep up with consuming the stream (resulting in full
-     buffers) result in the attached client gracefully skipping forward by
-     re-attaching at a later point, getting the latest rendered terminal state
-     and resuming from that point.
-   - Writes all concurrently connecting clients' input to the session PTY
-   - Client resizes are forwarded to the session PTY. When there are multiple,
-     the smallest column size, and smallest row size across all clients (even if
-     different clients) is forwarded, ensuring non-broken rendering
-   - Detach with ctrl+\, which resets the terminal to the same state prior to
-     attaching. That is, it leaves earlier terminal scroll history and position
-     in place. Prints a one line message saying "Detached from session".
-   - Closes automatically when session ends or disconnects. Acts like detach,
-     resetting the terminal state and restoring the non-session scroll history,
-     but it also reprints the final terminal state of the session (up to the
-     point the session wrote to, i.e. drop empty lines never touched at the
-     end), and then a one-line message about what happened.
-   - Showing detach instructions means a line of the terminal is reserved by the
-     client for showing how to detach.
-     - This line is cleared when session ends or disconnects.
-     - The instruction line is styled with a separate subtle background color.
-    - `--via` is the unsugared form of `--ssh`, allowing more arbitrary commands
-      to be used. providing both is an error.
+- attach [<id>] [--mode <mode>] [--ssh <host>] [--show-detach-instructions]
+  [--via <cmd...>]
+   - See: [./attach.md#requirements]
   - bridge <id>`
     - like `attach` except forwards the raw underlying frames, which allows a
       remote client to attach to the underlying session through `bgx attach
@@ -319,7 +294,8 @@ subcommands in a black-box manner.
 - The [#high-level-constraints] each have associated tests strongly validating the
   constraint is  met
 - The [#filesystem-requirements] are strongly validated via blackbox tests
-  - These tests use bubblewrap or seatbelt to simulate access issues, and docker to simulate missing directories.
+  - These tests use bubblewrap or seatbelt to simulate access issues, and docker
+    to simulate missing directories.
 - Logic that can be affected by timing is validated through fuzz testing that
 exercises all potential scenarios to discover race conditions automatically
 
@@ -333,8 +309,4 @@ support multiple platforms effectively.
 
 ## Attach
 
-- The attach protocol uses tagged, length-prefixed frames for terminal input,
-  terminal output, resize, detach, and session end.
-- Initial and skip-forward terminal states are delivered as ordinary output
-  frames containing a full VT reset (RIS) followed by a rendering of the current
-  screen. Snapshots do not use a separate frame type.
+See [./attach.md#implementation]
