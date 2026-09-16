@@ -141,9 +141,11 @@ intent_links:
       - client_attach_test.go:TestClientAttachReportsStreamedTerminalShortWrite
       - client_attach_test.go:TestClientAttachConcurrentOutputAndResizeKeepsSnapshotConsistent
       - client_attach_test.go:TestClientAttachDisconnectClearsDetachInstructionsWithoutReset
+      - e2e/attach_test.go:replayAttachTranscriptOverHistory
       - e2e/attach_test.go:assertAttachLifecycleTranscriptPreservesHistory
+      - e2e/attach_modes_test.go
       - e2e/attach_errors_test.go:TestAttachDisconnectClearsDetachInstructionsWithoutReset
-      - daemon/daemon.go:snapshot
+      - daemon/daemon.go:Session.snapshot
       - daemon/attach.go:serveAttach
       - daemon/attach.go:attachWriter
       - daemon/attach.go:deliverOutput

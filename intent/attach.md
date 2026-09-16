@@ -1,3 +1,118 @@
+---
+intent_links:
+  - intent: "#cli"
+    code:
+      - internal/cli/cli.go:runner.attachCommand
+      - internal/cli/cli.go:runner.attachAction
+      - internal/cli/cli_test.go:TestAttachAdapterMirrorsMode
+      - internal/cli/cli_test.go:TestAttachAdapterRejectsModeWithoutValue
+      - e2e/bridge_test.go:TestAttachRejectsUnknownMode
+  - intent: "#requirements"
+    code:
+      - client_attach.go:runTerminalAttach
+      - client_attach.go:finalAttachScreenPrefix
+      - client_attach.go:finalAttachOutcomePosition
+      - attachmodels.go:attachModels
+      - attachmodels.go:attachModels.applyOutput
+      - attachmodels.go:attachModels.applyResize
+      - attachmodels.go:attachModels.finish
+      - attachview.go:attachView
+      - client_attach_test.go:assertLifecycleRestoresHistoryAndPrintsFinalState
+      - client_attach_test.go:TestClientAttachSessionEndPrintsOutcomeAfterWrittenRows
+  - intent: "#modes"
+    code:
+      - attach.go:AttachMode
+      - attach.go:AttachMode.normalized
+      - attach.go:AttachOptions
+      - attach.go:Attach
+      - client_attach.go:attachConfig
+      - client_attach.go:WithAttachMode
+      - client_attach.go:Client.Attach
+      - attachmodels.go:presentation
+      - attachmodels.go:attachModels.start
+      - attachmodels.go:attachModels.applyOutput
+      - attachmodels.go:attachModels.followActiveScreen
+      - attachmodels.go:attachModels.leaveIsolated
+      - attachmodels.go:attachModels.nativeRepaint
+      - attachmodels.go:attachModels.sessionRows
+      - attachmodels.go:attachModels.showNativeHintOnce
+      - attachmodels.go:attachModels.nativeHintCleanup
+      - attachmodels.go:attachModels.finishIsolated
+      - attachmodels.go:attachModels.finishNative
+      - attachview.go:attachView.setSize
+      - attachmodels_test.go:TestAttachModelsIsolatedRepaintsOnColumnOnlyResize
+      - client_attach_test.go:TestClientAttachNativeHintClearedOnEndAndDisconnect
+      - client_attach_test.go:TestClientAttachNativeHintBeforeAlternateScreenIsCleanedUp
+      - vt/vt.go:Terminal.DumpPrimaryScreen
+      - attach_api_test.go:TestAttachAPIRejectsInvalidOptions
+      - attach_api_test.go:TestAttachAPIRejectsUnknownModeBeforeConnecting
+      - attach_api_test.go:TestAttachAPIModesAreAccepted
+      - attachmodels_test.go:TestAttachModelsAutoSelectsPresentationFromSnapshotScreen
+      - attachmodels_test.go:TestAttachModelsForcedModesIgnoreSnapshotScreen
+      - attachmodels_test.go:TestAttachModelsPendingCleanupOnlyPrintsOutcome
+      - client_attach_test.go:TestClientAttachNativeForwardsRawBytesAndDetaches
+      - client_attach_test.go:TestClientAttachNativeLeavesSessionAlternateScreenOnEnd
+      - client_attach_test.go:TestClientAttachNativeResizeAdvertisesFullHeight
+      - client_attach_test.go:TestClientAttachNativeShowsDetachHintOnceWithoutScrollRegion
+      - client_attach_test.go:TestClientAttachAutoTransitionsResizeAndForwardRawBeforeSwitch
+      - client_attach_test.go:TestClientAttachAutoStartedInAlternateScreenRestoresPrimaryOnExit
+      - attachmodels_test.go:TestAttachModelsAutoFollowsScreenSwitchesWithinOnePayload
+      - attachmodels_test.go:TestAttachModelsAutoFollowsScreenSwitchSplitAcrossFrames
+      - attachmodels_test.go:TestAttachModelsAutoResynchronizesAcrossScreens
+      - attachmodels_test.go:TestAttachModelsForcedModesNeverTransitionOnLiveOutput
+      - attachmodels_test.go:TestAttachModelsCleanupFollowsPresentationAtExit
+      - client_attach_test.go:TestClientAttachAutoIsolationWithdrawsNativelyForwardedModes
+      - client_attach_test.go:TestClientAttachAutoReturnToNativeRestoresSessionModes
+      - client_attach_test.go:TestClientAttachIsolatedDetachAfterNativePhaseRestoresCursorAndScrolling
+      - client_attach_test.go:TestClientAttachIsolatedDetachReleasesReservedScrollRegion
+      - attachmodels.go:nativeModeReset
+      - attachmodels.go:attachModels.finishIsolated
+      - vt/vt.go:Terminal.ModeSequences
+  - intent: "#modes-implementation"
+    code:
+      - attachmodels.go:isolatedEntry
+      - attachmodels.go:nativeCleanup
+      - attachmodels.go:nativeTitleHint
+      - attachmodels.go:attachModels.enterIsolated
+      - attachmodels.go:attachModels.enterNative
+      - attachmodels.go:attachModels.presentFromModel
+      - attachmodels.go:attachModels.presentRaw
+      - attachview.go:attachView.paint
+      - client_attach_test.go:assertNativeOutputNeverIsolatesOrResets
+  - intent: "#implementation"
+    code:
+      - vt/vt.go:SnapshotPrefix
+      - vt/vt.go:Terminal
+      - vt/vt.go:Terminal.Snapshot
+      - vt/vt.go:Terminal.AltScreen
+      - vt/vt.go:Terminal.WriteUntilScreenSwitch
+      - vt/vt.go:Terminal.trackSequence
+      - vt/vt_test.go:TestAltScreenTracksModeSequencesAcrossWritesAndRIS
+      - vt/vt_test.go:TestWriteUntilScreenSwitchStopsAfterEachToggle
+      - vt/vt_test.go:TestSnapshotRoundTripReproducesBothScreensCursorAndModes
+      - vt/vt_test.go:TestSnapshotOnPrimaryScreenRestoresScreenAndModesWithoutAlt
+      - daemon/daemon.go:Session.snapshot
+      - daemon/attach.go:Session.serveAttach
+      - daemon/attach.go:Session.deliverOutput
+      - daemon/attach.go:Session.attachWriter
+      - daemon/daemon_test.go:assertAttachTiles
+      - daemon/daemon_test.go:TestSlowClientResyncsInsteadOfDisconnect
+      - daemon/daemon_test.go:TestSessionEndDeliversOutputThenCloses
+  - intent: "#verification"
+    code:
+      - e2e/attach_modes_test.go
+      - e2e/attach_test.go:replayAttachTranscriptOverHistory
+      - e2e/attach_test.go:assertAttachLifecycleTranscriptPreservesHistory
+      - e2e/attach_test.go:TestAttachStreamsAndDetaches
+      - e2e/attach_test.go:TestAttachClosesOnSessionEnd
+      - e2e/attach_test.go:TestAttachShowDetachInstructionsReservesLine
+      - e2e/attach_test.go:TestAttachShowDetachInstructionsSurvivesDestructiveOutput
+      - e2e/attach_test.go:TestAttachShowDetachInstructionsOneRowTerminal
+      - e2e/attach_errors_test.go:TestAttachDisconnectClearsDetachInstructionsWithoutReset
+      - client_attach_test.go
+      - attachmodels_test.go
+---
+
 # Attach
 
 ## CLI

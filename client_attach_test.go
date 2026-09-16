@@ -17,6 +17,7 @@ import (
 	lg "github.com/ehsanul/libghostty-vt-static"
 	bgx "github.com/sidedotdev/bgx"
 	"github.com/sidedotdev/bgx/daemon"
+	"github.com/sidedotdev/bgx/vt"
 )
 
 type testTerminal struct {
@@ -392,7 +393,12 @@ func TestClientAttachDetachInstructionsReserveRowAndRenderHint(t *testing.T) {
 
 	result := make(chan error, 1)
 	go func() {
-		result <- bgx.NewClient(dial).Attach(context.Background(), terminal, bgx.WithDetachInstructions())
+		result <- bgx.NewClient(dial).Attach(
+			context.Background(),
+			terminal,
+			bgx.WithAttachMode(bgx.AttachModeIsolated),
+			bgx.WithDetachInstructions(),
+		)
 	}()
 
 	// The bottom row is reserved for the hint, so the session is told a
@@ -603,7 +609,11 @@ func TestClientAttachReportsTerminalWriteFailure(t *testing.T) {
 		return stream, nil
 	}
 
-	err := bgx.NewClient(dial).Attach(context.Background(), terminal)
+	err := bgx.NewClient(dial).Attach(
+		context.Background(),
+		terminal,
+		bgx.WithAttachMode(bgx.AttachModeIsolated),
+	)
 	if !errors.Is(err, writeErr) {
 		t.Fatalf("Attach error = %v, want terminal write error", err)
 	}
@@ -690,7 +700,11 @@ func TestClientAttachReportsMalformedDaemonFrame(t *testing.T) {
 		}
 	})
 	terminal := newTestTerminal(&contextPipeReader{terminalInputReader})
-	err := bgx.NewClient(dial).Attach(context.Background(), terminal)
+	err := bgx.NewClient(dial).Attach(
+		context.Background(),
+		terminal,
+		bgx.WithAttachMode(bgx.AttachModeIsolated),
+	)
 	if !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatalf("Attach error = %v, want unexpected EOF", err)
 	}
@@ -797,6 +811,7 @@ func TestClientAttachSkipsUnavailableSizeUntilValidResize(t *testing.T) {
 		result <- bgx.NewClient(dial).Attach(
 			context.Background(),
 			terminal,
+			bgx.WithAttachMode(bgx.AttachModeIsolated),
 			bgx.WithDetachInstructions(),
 		)
 	}()
@@ -857,6 +872,7 @@ func TestClientAttachDetachInstructionsSizeFailureRestoresDisplay(t *testing.T) 
 	err := bgx.NewClient(dial).Attach(
 		context.Background(),
 		terminal,
+		bgx.WithAttachMode(bgx.AttachModeIsolated),
 		bgx.WithDetachInstructions(),
 	)
 	if !errors.Is(err, sizeErr) {
@@ -1245,7 +1261,11 @@ func TestClientAttachReportsInitialTerminalShortWrite(t *testing.T) {
 		return stream, nil
 	}
 
-	err := bgx.NewClient(dial).Attach(context.Background(), terminal)
+	err := bgx.NewClient(dial).Attach(
+		context.Background(),
+		terminal,
+		bgx.WithAttachMode(bgx.AttachModeIsolated),
+	)
 	if !errors.Is(err, io.ErrShortWrite) {
 		t.Fatalf("Attach error = %v, want short write", err)
 	}
@@ -1281,7 +1301,11 @@ func TestClientAttachReportsStreamedTerminalShortWrite(t *testing.T) {
 
 	result := make(chan error, 1)
 	go func() {
-		result <- bgx.NewClient(dial).Attach(context.Background(), terminal)
+		result <- bgx.NewClient(dial).Attach(
+			context.Background(),
+			terminal,
+			bgx.WithAttachMode(bgx.AttachModeIsolated),
+		)
 	}()
 
 	expectResizeFrame(t, frames, 24, 80)
@@ -1555,6 +1579,7 @@ func TestClientAttachDisconnectClearsDetachInstructionsWithoutReset(t *testing.T
 		result <- bgx.NewClient(dial).Attach(
 			context.Background(),
 			terminal,
+			bgx.WithAttachMode(bgx.AttachModeIsolated),
 			bgx.WithDetachInstructions(),
 		)
 	}()
@@ -1809,7 +1834,11 @@ func TestClientAttachConcurrentOutputAndResizeKeepsSnapshotConsistent(t *testing
 
 	result := make(chan error, 1)
 	go func() {
-		result <- bgx.NewClient(dial).Attach(context.Background(), terminal)
+		result <- bgx.NewClient(dial).Attach(
+			context.Background(),
+			terminal,
+			bgx.WithAttachMode(bgx.AttachModeIsolated),
+		)
 	}()
 
 	// The initial resize frame confirms the handshake ack has been written, so
@@ -1887,64 +1916,902 @@ func TestClientAttachSessionEndPrintsOutcomeAfterWrittenRows(t *testing.T) {
 		},
 	}
 
+	for _, mode := range []bgx.AttachMode{bgx.AttachModeIsolated, bgx.AttachModeNative} {
+		for _, tt := range tests {
+			t.Run(string(mode)+"/"+tt.name, func(t *testing.T) {
+				clientConn, serverConn := net.Pipe()
+				t.Cleanup(func() {
+					if err := serverConn.Close(); err != nil {
+						t.Errorf("close attach server: %v", err)
+					}
+				})
+				dial := func(context.Context) (io.ReadWriteCloser, error) {
+					return clientConn, nil
+				}
+				frames := attachFrameServer(t, serverConn)
+
+				inputReader, inputWriter := io.Pipe()
+				t.Cleanup(func() {
+					if err := inputReader.Close(); err != nil {
+						t.Errorf("close terminal input reader: %v", err)
+					}
+					if err := inputWriter.Close(); err != nil {
+						t.Errorf("close terminal input writer: %v", err)
+					}
+				})
+				terminal := newTestTerminal(&contextPipeReader{inputReader})
+
+				result := make(chan error, 1)
+				go func() {
+					result <- bgx.NewClient(dial).Attach(
+						context.Background(),
+						terminal,
+						bgx.WithAttachMode(mode),
+					)
+				}()
+
+				expectResizeFrame(t, frames, 24, 80)
+				if err := daemon.WriteFrame(serverConn, daemon.FrameOutput, []byte(tt.payload)); err != nil {
+					t.Fatalf("write output frame: %v", err)
+				}
+				if err := daemon.WriteFrame(serverConn, daemon.FrameEnded, nil); err != nil {
+					t.Fatalf("write ended frame: %v", err)
+				}
+
+				select {
+				case err := <-result:
+					if err != nil {
+						t.Fatalf("Attach: %v", err)
+					}
+				case <-time.After(time.Second):
+					t.Fatal("Attach did not return after session end")
+				}
+
+				output, _, _ := terminal.snapshot()
+				if !strings.HasSuffix(output, "Session ended\r\n") {
+					t.Fatalf("terminal output = %q, want session-ended message after final state", output)
+				}
+				if mode == bgx.AttachModeNative {
+					assertNativeOutputNeverIsolatesOrResets(t, output)
+				}
+				assertLifecycleRestoresHistoryAndPrintsFinalState(
+					t,
+					output,
+					80,
+					24,
+					tt.sessionLines,
+					"Session ended",
+				)
+			})
+		}
+	}
+}
+
+// assertNativeOutputNeverIsolatesOrResets checks that a native attachment
+// never took over the alternate screen on its own initiative, reset the
+// terminal, or cleared the outer scrollback.
+func assertNativeOutputNeverIsolatesOrResets(t *testing.T, output string) {
+	t.Helper()
+	for _, forbidden := range []string{"\x1b[?1049h", "\x1b[?47h", "\x1b[?1047h", "\x1bc", "\x1b[3J"} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("native attach wrote %q; output %q", forbidden, output)
+		}
+	}
+}
+
+// nativeAttachHarness runs a native-mode attachment against a frame server
+// and returns the streamed client frames plus the terminal input writer.
+type nativeAttachHarness struct {
+	serverConn net.Conn
+	frames     <-chan frameMsg
+	terminal   *testTerminal
+	input      *io.PipeWriter
+	result     chan error
+}
+
+func startNativeAttach(t *testing.T, options ...bgx.AttachOption) *nativeAttachHarness {
+	t.Helper()
+	return startModeAttach(t, bgx.AttachModeNative, options...)
+}
+
+func startModeAttach(t *testing.T, mode bgx.AttachMode, options ...bgx.AttachOption) *nativeAttachHarness {
+	t.Helper()
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() {
+		// Tests may already have closed the server side to simulate a
+		// disconnect, so a close error here is expected noise.
+		_ = serverConn.Close() //nolint:errcheck
+	})
+	dial := func(context.Context) (io.ReadWriteCloser, error) {
+		return clientConn, nil
+	}
+	frames := attachFrameServer(t, serverConn)
+
+	inputReader, inputWriter := io.Pipe()
+	t.Cleanup(func() {
+		if err := inputReader.Close(); err != nil {
+			t.Errorf("close terminal input reader: %v", err)
+		}
+		if err := inputWriter.Close(); err != nil {
+			t.Errorf("close terminal input writer: %v", err)
+		}
+	})
+	terminal := newTestTerminal(&contextPipeReader{inputReader})
+
+	h := &nativeAttachHarness{
+		serverConn: serverConn,
+		frames:     frames,
+		terminal:   terminal,
+		input:      inputWriter,
+		result:     make(chan error, 1),
+	}
+	go func() {
+		h.result <- bgx.NewClient(dial).Attach(
+			context.Background(),
+			terminal,
+			append([]bgx.AttachOption{bgx.WithAttachMode(mode)}, options...)...,
+		)
+	}()
+	return h
+}
+
+func (h *nativeAttachHarness) writeOutput(t *testing.T, payload string) {
+	t.Helper()
+	if err := daemon.WriteFrame(h.serverConn, daemon.FrameOutput, []byte(payload)); err != nil {
+		t.Fatalf("write output frame: %v", err)
+	}
+}
+
+func (h *nativeAttachHarness) waitForOutput(t *testing.T, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		output, _, _ := h.terminal.snapshot()
+		if strings.Contains(output, want) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("terminal output %q never contained %q", output, want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func (h *nativeAttachHarness) wait(t *testing.T, wantErr error) string {
+	t.Helper()
+	select {
+	case err := <-h.result:
+		if wantErr == nil && err != nil {
+			t.Fatalf("Attach: %v", err)
+		}
+		if wantErr != nil && !errors.Is(err, wantErr) {
+			t.Fatalf("Attach error = %v, want %v", err, wantErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Attach did not return")
+	}
+	output, entered, restored := h.terminal.snapshot()
+	if !entered || !restored {
+		t.Fatalf("raw lifecycle entered=%v restored=%v, want both true", entered, restored)
+	}
+	return output
+}
+
+// nativeModeReset is the client's withdrawal of session input-reporting modes
+// whenever the outer terminal stops receiving forwarded session bytes.
+const nativeModeReset = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?1l"
+
+// nativeEntry is what the client writes before the first forwarded bytes on an
+// 80x24 terminal: the pre-attach screen is scrolled into scrollback and the
+// cursor homed, without touching the alternate screen.
+func nativeEntry(rows int) string {
+	return fmt.Sprintf("\x1b[%d;1H", rows) + strings.Repeat("\r\n", rows) + "\x1b[H"
+}
+
+func TestClientAttachNativeForwardsRawBytesAndDetaches(t *testing.T) {
+	h := startNativeAttach(t)
+	// Native presentation advertises the full terminal height.
+	expectResizeFrame(t, h.frames, 24, 80)
+
+	before, _, _ := h.terminal.snapshot()
+	if before != "" {
+		t.Fatalf("native attach wrote %q before any session output", before)
+	}
+
+	const payload = "raw \x1b[31mred\x1b[0m\r\n\x1b[?1000h\x1b[?2004hprompt> "
+	h.writeOutput(t, payload)
+	h.waitForOutput(t, "prompt> ")
+
+	if _, err := h.input.Write([]byte("typed")); err != nil {
+		t.Fatalf("write terminal input: %v", err)
+	}
+	frame := nextFrame(t, h.frames)
+	if frame.tag != daemon.FrameInput || string(frame.payload) != "typed" {
+		t.Fatalf("frame = tag %v payload %q, want FrameInput %q", frame.tag, frame.payload, "typed")
+	}
+
+	if _, err := h.input.Write([]byte{0x1C}); err != nil {
+		t.Fatalf("write detach key: %v", err)
+	}
+	if frame := nextFrame(t, h.frames); frame.tag != daemon.FrameDetach {
+		t.Fatalf("frame tag = %v, want FrameDetach", frame.tag)
+	}
+	output := h.wait(t, nil)
+
+	assertNativeOutputNeverIsolatesOrResets(t, output)
+	wantPrefix := nativeEntry(24) + payload
+	if !strings.HasPrefix(output, wantPrefix) {
+		t.Fatalf("native output = %q, want raw session bytes after entry %q", output, wantPrefix)
+	}
+	cleanup := output[len(wantPrefix):]
+	for _, want := range []string{
+		"\x1b[?1000l", "\x1b[?1002l", "\x1b[?1003l", "\x1b[?1006l", "\x1b[?1004l", "\x1b[?2004l", "\x1b[?1l",
+		"\x1b[?25h\x1b[0m", "\x1b7\x1b[r\x1b8",
+	} {
+		if !strings.Contains(cleanup, want) {
+			t.Fatalf("native cleanup %q lacks %q", cleanup, want)
+		}
+	}
+	if strings.Contains(cleanup, "\x1b[?1049l") {
+		t.Fatalf("native cleanup %q left an alternate screen the session never entered", cleanup)
+	}
+	if !strings.HasSuffix(output, "Detached from session\r\n") {
+		t.Fatalf("native output = %q, want detach message last", output)
+	}
+	assertLifecycleRestoresHistoryAndPrintsFinalState(
+		t,
+		output,
+		80,
+		24,
+		[]string{"raw red", "prompt> "},
+		"Detached from session",
+	)
+}
+
+func TestClientAttachNativeLeavesSessionAlternateScreenOnEnd(t *testing.T) {
+	h := startNativeAttach(t)
+	expectResizeFrame(t, h.frames, 24, 80)
+
+	h.writeOutput(t, "shell$ \x1b[?1049h\x1b[2J\x1b[HTUI\x1b[?25l")
+	h.waitForOutput(t, "TUI")
+	if err := daemon.WriteFrame(h.serverConn, daemon.FrameEnded, nil); err != nil {
+		t.Fatalf("write ended frame: %v", err)
+	}
+	output := h.wait(t, nil)
+
+	// The session's own alternate-screen switch is forwarded verbatim, so
+	// cleanup must leave it and re-show the cursor before the outcome.
+	afterContent := output[strings.LastIndex(output, "TUI"):]
+	leave := strings.Index(afterContent, "\x1b[?1049l")
+	if leave < 0 {
+		t.Fatalf("native cleanup %q did not leave the session's alternate screen", afterContent)
+	}
+	if !strings.Contains(afterContent[leave:], "\x1b[?25h\x1b[0m") {
+		t.Fatalf("native cleanup %q did not restore the cursor", afterContent)
+	}
+	if !strings.HasSuffix(output, "\r\nSession ended\r\n") {
+		t.Fatalf("native output = %q, want session-ended message last", output)
+	}
+	for _, forbidden := range []string{"\x1bc", "\x1b[3J"} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("native attach wrote %q", forbidden)
+		}
+	}
+}
+
+func TestClientAttachNativeResizeAdvertisesFullHeight(t *testing.T) {
+	h := startNativeAttach(t, bgx.WithDetachInstructions())
+	// The hint is one-time, not a reserved row, so no row is withheld.
+	expectResizeFrame(t, h.frames, 24, 80)
+
+	h.terminal.setSize(100, 30)
+	select {
+	case h.terminal.resize <- struct{}{}:
+	case <-time.After(time.Second):
+		t.Fatal("resize event was not consumed")
+	}
+	expectResizeFrame(t, h.frames, 30, 100)
+
+	if err := h.serverConn.Close(); err != nil {
+		t.Fatalf("close attach server: %v", err)
+	}
+	output := h.wait(t, io.EOF)
+	// Nothing was presented, so the terminal is untouched apart from the
+	// outcome line.
+	if output != "\r\nDisconnected from session\r\n" {
+		t.Fatalf("native output = %q, want only the disconnect message", output)
+	}
+}
+
+// renderTranscript replays raw client output onto a fresh terminal and returns
+// the visible rows with trailing blanks trimmed, plus the styled VT rendering
+// so tests can check that no client-side styling survives.
+func renderTranscript(t *testing.T, transcript string, cols, rows uint16) (plain []string, styled string) {
+	t.Helper()
+	term, err := lg.NewTerminal(lg.WithSize(cols, rows))
+	if err != nil {
+		t.Fatalf("new terminal: %v", err)
+	}
+	defer term.Close()
+	term.VTWrite([]byte(transcript))
+	format := func(format lg.FormatterFormat) string {
+		f, err := lg.NewFormatter(term, lg.WithFormatterFormat(format))
+		if err != nil {
+			t.Fatalf("new formatter: %v", err)
+		}
+		defer f.Close()
+		s, err := f.FormatString()
+		if err != nil {
+			t.Fatalf("format screen: %v", err)
+		}
+		return s
+	}
+	lines := strings.Split(format(lg.FormatterFormatPlain), "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " ")
+	}
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines, format(lg.FormatterFormatVT)
+}
+
+func TestClientAttachNativeHintClearedOnEndAndDisconnect(t *testing.T) {
+	tests := []struct {
+		name    string
+		output  []string
+		finish  func(t *testing.T, h *nativeAttachHarness) string
+		message string
+		// want is the rendered screen after the attachment finished, given the
+		// pre-attach screen was scrolled away by native entry.
+		want []string
+	}{
+		{
+			name:   "immediate end after hint leaves no hint on the outcome row",
+			output: []string{"line-1\r\nline-2\r\n"},
+			finish: func(t *testing.T, h *nativeAttachHarness) string {
+				if err := daemon.WriteFrame(h.serverConn, daemon.FrameEnded, nil); err != nil {
+					t.Fatalf("write ended frame: %v", err)
+				}
+				return h.wait(t, nil)
+			},
+			message: "Session ended",
+			want:    []string{"line-1", "line-2", "", "Session ended"},
+		},
+		{
+			name: "cursor-addressed output past the hint keeps the session content",
+			// The hint lands on row 4 (cursor waits on row 3); the session then
+			// draws on rows 6 and 4 by absolute addressing, so row 4 must not be
+			// erased while nothing else of the hint remains.
+			output: []string{"line-1\r\nline-2\r\n", "\x1b[6;1Hstatus\x1b[4;1H\x1b[2Koverwrote-hint"},
+			finish: func(t *testing.T, h *nativeAttachHarness) string {
+				if err := h.serverConn.Close(); err != nil {
+					t.Fatalf("close attach server: %v", err)
+				}
+				return h.wait(t, io.EOF)
+			},
+			message: "Disconnected from session",
+			want:    []string{"line-1", "line-2", "", "overwrote-hint", "", "status", "Disconnected from session"},
+		},
+		{
+			name:   "cursor-addressed output below the hint still clears the hint row",
+			output: []string{"line-1\r\nline-2\r\n", "\x1b[8;1Hfooter"},
+			finish: func(t *testing.T, h *nativeAttachHarness) string {
+				if err := daemon.WriteFrame(h.serverConn, daemon.FrameEnded, nil); err != nil {
+					t.Fatalf("write ended frame: %v", err)
+				}
+				return h.wait(t, nil)
+			},
+			message: "Session ended",
+			want:    []string{"line-1", "line-2", "", "", "", "", "", "footer", "Session ended"},
+		},
+		{
+			name: "partial overwrite without an erase keeps only the session's characters",
+			// The session writes over the start of the hint row without
+			// erasing it, so the hint's tail and background would otherwise
+			// survive next to the session's text.
+			output: []string{"line-1\r\nline-2\r\n", "\x1b[4;1Hpartial"},
+			finish: func(t *testing.T, h *nativeAttachHarness) string {
+				if err := h.serverConn.Close(); err != nil {
+					t.Fatalf("close attach server: %v", err)
+				}
+				return h.wait(t, io.EOF)
+			},
+			message: "Disconnected from session",
+			want:    []string{"line-1", "line-2", "", "partial", "Disconnected from session"},
+		},
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			clientConn, serverConn := net.Pipe()
-			t.Cleanup(func() {
-				if err := serverConn.Close(); err != nil {
-					t.Errorf("close attach server: %v", err)
-				}
-			})
-			dial := func(context.Context) (io.ReadWriteCloser, error) {
-				return clientConn, nil
+			h := startNativeAttach(t, bgx.WithDetachInstructions())
+			expectResizeFrame(t, h.frames, 24, 80)
+			h.writeOutput(t, tt.output[0])
+			h.waitForOutput(t, `detach: ctrl+\`)
+			for _, payload := range tt.output[1:] {
+				h.writeOutput(t, payload)
+				h.waitForOutput(t, payload)
 			}
-			frames := attachFrameServer(t, serverConn)
+			output := tt.finish(t, h)
 
-			inputReader, inputWriter := io.Pipe()
-			t.Cleanup(func() {
-				if err := inputReader.Close(); err != nil {
-					t.Errorf("close terminal input reader: %v", err)
-				}
-				if err := inputWriter.Close(); err != nil {
-					t.Errorf("close terminal input writer: %v", err)
-				}
-			})
-			terminal := newTestTerminal(&contextPipeReader{inputReader})
-
-			result := make(chan error, 1)
-			go func() {
-				result <- bgx.NewClient(dial).Attach(context.Background(), terminal)
-			}()
-
-			expectResizeFrame(t, frames, 24, 80)
-			if err := daemon.WriteFrame(serverConn, daemon.FrameOutput, []byte(tt.payload)); err != nil {
-				t.Fatalf("write output frame: %v", err)
+			if !strings.HasSuffix(output, tt.message+"\r\n") {
+				t.Fatalf("native output = %q, want outcome message last", output)
 			}
-			if err := daemon.WriteFrame(serverConn, daemon.FrameEnded, nil); err != nil {
-				t.Fatalf("write ended frame: %v", err)
+			assertNativeOutputNeverIsolatesOrResets(t, output)
+			got, styled := renderTranscript(t, output, 80, 24)
+			if strings.Join(got, "\n") != strings.Join(tt.want, "\n") {
+				t.Fatalf("rendered screen:\n%q\nwant:\n%q\ntranscript %q", got, tt.want, output)
 			}
+			if strings.Contains(styled, "48;5;236") {
+				t.Fatalf("hint background survived on the final screen: %q", styled)
+			}
+		})
+	}
+}
 
-			select {
-			case err := <-result:
-				if err != nil {
-					t.Fatalf("Attach: %v", err)
+// TestClientAttachNativeHintBeforeAlternateScreenIsCleanedUp draws the hint on
+// the primary buffer, has the session enter its alternate screen, and checks
+// that every lifecycle exit restores the session's primary content with no
+// trace of the hint, a clean outcome line, and intact scrollback.
+func TestClientAttachNativeHintBeforeAlternateScreenIsCleanedUp(t *testing.T) {
+	const primary = "shell$ ls\r\nfile-a\r\nfile-b\r\nshell$ vim"
+	const enterAlt = "\x1b[?1049h\x1b[2J\x1b[HEDITOR\x1b[?25l"
+	tests := []struct {
+		name string
+		// exitAlt is session output leaving the alternate screen before the
+		// lifecycle event, or empty when the session is still in it.
+		exitAlt string
+		finish  func(t *testing.T, h *nativeAttachHarness) string
+		message string
+	}{
+		{
+			name: "detach while in alternate screen",
+			finish: func(t *testing.T, h *nativeAttachHarness) string {
+				if _, err := h.input.Write([]byte{0x1C}); err != nil {
+					t.Fatalf("write detach key: %v", err)
 				}
-			case <-time.After(time.Second):
-				t.Fatal("Attach did not return after session end")
+				if frame := nextFrame(t, h.frames); frame.tag != daemon.FrameDetach {
+					t.Fatalf("frame tag = %v, want FrameDetach", frame.tag)
+				}
+				return h.wait(t, nil)
+			},
+			message: "Detached from session",
+		},
+		{
+			name: "session end while in alternate screen",
+			finish: func(t *testing.T, h *nativeAttachHarness) string {
+				if err := daemon.WriteFrame(h.serverConn, daemon.FrameEnded, nil); err != nil {
+					t.Fatalf("write ended frame: %v", err)
+				}
+				return h.wait(t, nil)
+			},
+			message: "Session ended",
+		},
+		{
+			name: "disconnect while in alternate screen",
+			finish: func(t *testing.T, h *nativeAttachHarness) string {
+				if err := h.serverConn.Close(); err != nil {
+					t.Fatalf("close attach server: %v", err)
+				}
+				return h.wait(t, io.EOF)
+			},
+			message: "Disconnected from session",
+		},
+		{
+			name:    "session end after leaving alternate screen itself",
+			exitAlt: "\x1b[?1049l\x1b[?25h",
+			finish: func(t *testing.T, h *nativeAttachHarness) string {
+				if err := daemon.WriteFrame(h.serverConn, daemon.FrameEnded, nil); err != nil {
+					t.Fatalf("write ended frame: %v", err)
+				}
+				return h.wait(t, nil)
+			},
+			message: "Session ended",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := startNativeAttach(t, bgx.WithDetachInstructions())
+			expectResizeFrame(t, h.frames, 24, 80)
+			h.writeOutput(t, primary)
+			h.waitForOutput(t, `detach: ctrl+\`)
+			h.writeOutput(t, enterAlt)
+			h.waitForOutput(t, "EDITOR")
+			if tt.exitAlt != "" {
+				h.writeOutput(t, tt.exitAlt)
+				h.waitForOutput(t, tt.exitAlt)
 			}
+			output := tt.finish(t, h)
 
-			output, _, _ := terminal.snapshot()
-			if !strings.HasSuffix(output, "Session ended\r\n") {
-				t.Fatalf("terminal output = %q, want session-ended message after final state", output)
+			if !strings.HasSuffix(output, tt.message+"\r\n") {
+				t.Fatalf("native output = %q, want outcome message last", output)
+			}
+			// The session's own alternate-screen entry is forwarded verbatim,
+			// so only the client's own take-over is forbidden here.
+			if strings.Count(output, "\x1b[?1049h") != 1 {
+				t.Fatalf("native output = %q, want exactly the session's alternate-screen entry", output)
+			}
+			for _, forbidden := range []string{"\x1bc", "\x1b[3J"} {
+				if strings.Contains(output, forbidden) {
+					t.Fatalf("native attach wrote %q", forbidden)
+				}
+			}
+			got, styled := renderTranscript(t, output, 80, 24)
+			// The primary buffer is back with the shell's content, the hint
+			// row (row 5) is blank again, and the outcome follows the prompt.
+			want := []string{"shell$ ls", "file-a", "file-b", "shell$ vim", tt.message}
+			if strings.Join(got, "\n") != strings.Join(want, "\n") {
+				t.Fatalf("rendered screen:\n%q\nwant:\n%q\ntranscript %q", got, want, output)
+			}
+			if strings.Contains(styled, "48;5;236") || strings.Contains(styled, "EDITOR") {
+				t.Fatalf("alternate screen or hint styling survived on the final screen: %q", styled)
 			}
 			assertLifecycleRestoresHistoryAndPrintsFinalState(
 				t,
 				output,
 				80,
 				24,
-				tt.sessionLines,
-				"Session ended",
+				[]string{"shell$ ls", "file-a", "file-b", "shell$ vim"},
+				tt.message,
 			)
 		})
 	}
+}
+
+func TestClientAttachNativeShowsDetachHintOnceWithoutScrollRegion(t *testing.T) {
+	h := startNativeAttach(t, bgx.WithDetachInstructions())
+	expectResizeFrame(t, h.frames, 24, 80)
+
+	h.writeOutput(t, "line-1\r\nline-2\r\n")
+	h.waitForOutput(t, `detach: ctrl+\`)
+	h.writeOutput(t, "line-3\r\n")
+	h.waitForOutput(t, "line-3")
+	if _, err := h.input.Write([]byte{0x1C}); err != nil {
+		t.Fatalf("write detach key: %v", err)
+	}
+	output := h.wait(t, nil)
+
+	if got := strings.Count(output, `detach: ctrl+\`); got != 1 {
+		t.Fatalf("detach hint shown %d times, want exactly once; output %q", got, output)
+	}
+	// The hint is drawn on the first row the session has not reached (the
+	// cursor waits on row 3 after two lines), with the cursor saved and
+	// restored around it.
+	wantHint := "\x1b7\x1b[4;1H\x1b[48;5;236;38;5;250m\x1b[2K detach: ctrl+\\ \x1b[0m\x1b8"
+	if !strings.Contains(output, wantHint) {
+		t.Fatalf("native output %q lacks one-time hint %q", output, wantHint)
+	}
+	if !strings.Contains(output, "\x1b]0;") {
+		t.Fatalf("native output %q lacks the best-effort title hint", output)
+	}
+	// Session bytes keep flowing raw after the hint; nothing confines them.
+	if !strings.Contains(output, wantHint+"line-3\r\n") {
+		t.Fatalf("native output %q did not forward output raw after the hint", output)
+	}
+	// The only scroll-region write is the full reset during cleanup.
+	if strings.Count(output, "\x1b[r") != 1 || strings.Contains(output, ";24r") {
+		t.Fatalf("native output %q set a scroll region", output)
+	}
+	assertNativeOutputNeverIsolatesOrResets(t, output)
+}
+
+// daemonSnapshot renders the output frame a daemon sends on attach or
+// resynchronization for a session that has produced sessionOutput.
+func daemonSnapshot(t *testing.T, sessionOutput string) string {
+	t.Helper()
+	term, err := vt.New(80, 24)
+	if err != nil {
+		t.Fatalf("vt.New: %v", err)
+	}
+	defer term.Close()
+	if _, err := term.Write([]byte(sessionOutput)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	snapshot, err := term.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	return string(snapshot)
+}
+
+func TestClientAttachAutoTransitionsResizeAndForwardRawBeforeSwitch(t *testing.T) {
+	h := startModeAttach(t, bgx.AttachModeAuto, bgx.WithDetachInstructions())
+	// Nothing is reserved until the first frame reveals the active screen.
+	expectResizeFrame(t, h.frames, 24, 80)
+
+	h.writeOutput(t, daemonSnapshot(t, "shell$ "))
+	h.waitForOutput(t, "shell$ ")
+
+	// Bytes up to the alternate-screen entry stream raw; the entry itself is
+	// replaced by the protected isolated screen with a reserved hint row.
+	h.writeOutput(t, "ls\r\n\x1b[?1049h\x1b[2J\x1b[HEDITOR")
+	expectResizeFrame(t, h.frames, 23, 80)
+	h.waitForOutput(t, "EDITOR")
+	output, _, _ := h.terminal.snapshot()
+	entered := strings.Index(output, "\x1b[?1049h\x1b[2J\x1b[H")
+	if entered < 0 || !strings.HasSuffix(output[:entered], "ls\r\n"+nativeModeReset) {
+		t.Fatalf("output %q: raw bytes before the switch were not forwarded ahead of isolation", output)
+	}
+	if strings.Contains(output[:entered], "EDITOR") {
+		t.Fatalf("output %q forwarded alternate-screen bytes raw", output)
+	}
+	if !strings.Contains(output[entered:], "\x1b[1;23r") {
+		t.Fatalf("output %q did not reserve the hint row while isolated", output)
+	}
+
+	// Leaving the alternate screen returns to native at full height and
+	// repaints the primary screen from the model instead of forwarding.
+	h.writeOutput(t, "\x1b[?1049lshell$ ")
+	expectResizeFrame(t, h.frames, 24, 80)
+	h.waitForOutput(t, "\x1b[?1049l\x1b[r\x1b[2J\x1b[H\x1b[0m")
+
+	if _, err := h.input.Write([]byte{0x1C}); err != nil {
+		t.Fatalf("write detach key: %v", err)
+	}
+	output = h.wait(t, nil)
+	if got := strings.Count(output, "\x1b[?1049h"); got != 1 {
+		t.Fatalf("alternate screen entered %d times, want once; output %q", got, output)
+	}
+	for _, forbidden := range []string{"\x1bc", "\x1b[3J"} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("auto attach wrote %q", forbidden)
+		}
+	}
+	// Cleanup follows the presentation at exit: native mode restoration
+	// without leaving an alternate screen the terminal is no longer on.
+	leftAlt := strings.LastIndex(output, "\x1b[?1049l")
+	if !strings.Contains(output[leftAlt:], "\x1b7\x1b[r\x1b8") {
+		t.Fatalf("output %q lacks native cleanup after returning to the primary screen", output)
+	}
+	if !strings.HasSuffix(output, "Detached from session\r\n") {
+		t.Fatalf("output %q lacks the detach outcome", output)
+	}
+	got, styled := renderTranscript(t, output, 80, 24)
+	want := []string{"shell$ ls", "shell$", "Detached from session"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("rendered screen:\n%q\nwant:\n%q\ntranscript %q", got, want, output)
+	}
+	if strings.Contains(styled, "EDITOR") || strings.Contains(styled, "48;5;236") {
+		t.Fatalf("alternate screen or hint styling survived on the final screen: %q", styled)
+	}
+	assertLifecycleRestoresHistoryAndPrintsFinalState(t, output, 80, 24, []string{"shell$ ls", "shell$ "}, "Detached from session")
+}
+
+func TestClientAttachAutoStartedInAlternateScreenRestoresPrimaryOnExit(t *testing.T) {
+	h := startModeAttach(t, bgx.AttachModeAuto, bgx.WithDetachInstructions())
+	expectResizeFrame(t, h.frames, 24, 80)
+
+	h.writeOutput(t, daemonSnapshot(t, "shell$ ls\r\nfile-a\r\nshell$ vim\x1b[?1049h\x1b[2J\x1b[HEDITOR"))
+	expectResizeFrame(t, h.frames, 23, 80)
+	h.waitForOutput(t, "EDITOR")
+	output, _, _ := h.terminal.snapshot()
+	if !strings.HasPrefix(output, "\x1b[?1049h\x1b[2J\x1b[H") {
+		t.Fatalf("output %q did not isolate up front for a session on the alternate screen", output)
+	}
+
+	h.writeOutput(t, "\x1b[?1049l\r\nshell$ ")
+	expectResizeFrame(t, h.frames, 24, 80)
+	h.waitForOutput(t, "shell$ vim")
+
+	if err := h.serverConn.Close(); err != nil {
+		t.Fatalf("close server conn: %v", err)
+	}
+	output = h.wait(t, io.EOF)
+	if !strings.HasSuffix(output, "Disconnected from session\r\n") {
+		t.Fatalf("output %q lacks the disconnect outcome", output)
+	}
+	got, styled := renderTranscript(t, output, 80, 24)
+	want := []string{"shell$ ls", "file-a", "shell$ vim", "shell$", "Disconnected from session"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("rendered screen:\n%q\nwant:\n%q\ntranscript %q", got, want, output)
+	}
+	if strings.Contains(styled, "EDITOR") {
+		t.Fatalf("alternate screen survived on the final screen: %q", styled)
+	}
+	assertLifecycleRestoresHistoryAndPrintsFinalState(
+		t, output, 80, 24, []string{"shell$ ls", "file-a", "shell$ vim", "shell$ "}, "Disconnected from session",
+	)
+}
+
+// physicalModes replays a client transcript onto a fresh terminal and returns
+// the explicit set/reset sequences describing its resulting tracked modes.
+func physicalModes(t *testing.T, transcript string) string {
+	t.Helper()
+	term, err := vt.New(80, 24)
+	if err != nil {
+		t.Fatalf("vt.New: %v", err)
+	}
+	defer term.Close()
+	if _, err := term.Write([]byte(transcript)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	return string(term.ModeSequences())
+}
+
+func TestClientAttachAutoIsolationWithdrawsNativelyForwardedModes(t *testing.T) {
+	const enableModes = "\x1b[?1h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b[?2004h"
+	const wantReset = "\x1b[?1l\x1b[?1000l\x1b[?1002l\x1b[?1004l\x1b[?1006l\x1b[?2004l"
+	tests := []struct {
+		name   string
+		finish func(t *testing.T, h *nativeAttachHarness) string
+	}{
+		{
+			name: "detach",
+			finish: func(t *testing.T, h *nativeAttachHarness) string {
+				if _, err := h.input.Write([]byte{0x1C}); err != nil {
+					t.Fatalf("write detach key: %v", err)
+				}
+				return h.wait(t, nil)
+			},
+		},
+		{
+			name: "session end",
+			finish: func(t *testing.T, h *nativeAttachHarness) string {
+				if err := daemon.WriteFrame(h.serverConn, daemon.FrameEnded, nil); err != nil {
+					t.Fatalf("write ended frame: %v", err)
+				}
+				return h.wait(t, nil)
+			},
+		},
+		{
+			name: "disconnect",
+			finish: func(t *testing.T, h *nativeAttachHarness) string {
+				if err := h.serverConn.Close(); err != nil {
+					t.Fatalf("close server conn: %v", err)
+				}
+				return h.wait(t, io.EOF)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := startModeAttach(t, bgx.AttachModeAuto)
+			expectResizeFrame(t, h.frames, 24, 80)
+			h.writeOutput(t, daemonSnapshot(t, "shell$ "))
+			h.waitForOutput(t, "shell$ ")
+
+			// A primary-buffer program enables reporting modes, which stream
+			// raw to the physical terminal, then a TUI takes the alternate
+			// screen and the attachment ends while isolated.
+			h.writeOutput(t, enableModes+"picker> ")
+			h.waitForOutput(t, "picker> ")
+			if !strings.Contains(physicalModes(t, h.terminal.output.String()), "\x1b[?1000h") {
+				t.Fatal("modes were not forwarded natively before isolation")
+			}
+			h.writeOutput(t, "\x1b[?1049h\x1b[2J\x1b[HEDITOR")
+			h.waitForOutput(t, "EDITOR")
+
+			output := tt.finish(t, h)
+			if strings.Contains(output, "\x1bc") || strings.Contains(output, "\x1b[3J") {
+				t.Fatalf("cleanup reset the terminal or cleared scrollback: %q", output)
+			}
+			modes := physicalModes(t, output)
+			if !strings.Contains(modes, "\x1b[?25h") {
+				t.Fatalf("cursor left hidden after %s; modes %q output %q", tt.name, modes, output)
+			}
+			for _, want := range strings.SplitAfter(wantReset, "l") {
+				if want == "" {
+					continue
+				}
+				if !strings.Contains(modes, want) {
+					t.Fatalf("physical terminal modes %q after %s lack %q; output %q", modes, tt.name, want, output)
+				}
+			}
+		})
+	}
+}
+
+func TestClientAttachAutoReturnToNativeRestoresSessionModes(t *testing.T) {
+	h := startModeAttach(t, bgx.AttachModeAuto)
+	expectResizeFrame(t, h.frames, 24, 80)
+	h.writeOutput(t, daemonSnapshot(t, "shell$ "))
+	h.waitForOutput(t, "shell$ ")
+
+	h.writeOutput(t, "\x1b[?2004h\x1b[?1h\x1b[?1049h\x1b[2J\x1b[HEDITOR")
+	h.waitForOutput(t, "EDITOR")
+	isolated, _, _ := h.terminal.snapshot()
+	if modes := physicalModes(t, isolated); strings.Contains(modes, "\x1b[?2004h") || strings.Contains(modes, "\x1b[?1h") {
+		t.Fatalf("session modes stayed enabled while isolated: %q", modes)
+	}
+
+	// The session keeps bracketed paste and application cursor keys enabled
+	// when it leaves the alternate screen, so native presentation must bring
+	// the physical terminal back into agreement with it.
+	h.writeOutput(t, "\x1b[?1049lshell$ ")
+	h.waitForOutput(t, "\x1b[?1049l\x1b[r\x1b[2J\x1b[H\x1b[0m")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		native, _, _ := h.terminal.snapshot()
+		modes := physicalModes(t, native)
+		if strings.Contains(modes, "\x1b[?2004h") && strings.Contains(modes, "\x1b[?1h") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("session modes not restored after returning to native: %q output %q", modes, native)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if _, err := h.input.Write([]byte{0x1C}); err != nil {
+		t.Fatalf("write detach key: %v", err)
+	}
+	output := h.wait(t, nil)
+	if modes := physicalModes(t, output); strings.Contains(modes, "\x1b[?2004h") || strings.Contains(modes, "\x1b[?1h") {
+		t.Fatalf("native detach left session modes enabled: %q", modes)
+	}
+}
+
+// assertUnrestrictedScrolling replays a transcript and then writes past the
+// bottom row, which only scrolls the whole screen when no DECSTBM region was
+// left behind.
+func assertUnrestrictedScrolling(t *testing.T, transcript string) {
+	t.Helper()
+	term, err := vt.New(80, 24)
+	if err != nil {
+		t.Fatalf("vt.New: %v", err)
+	}
+	defer term.Close()
+	if _, err := term.Write([]byte(transcript + "\x1b[24;1Hbottom-probe\r\nnext-probe")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	screen, err := term.DumpScreen()
+	if err != nil {
+		t.Fatalf("DumpScreen: %v", err)
+	}
+	if !strings.Contains(string(screen), "bottom-probe") || !strings.Contains(string(screen), "next-probe") {
+		t.Fatalf("scrolling is restricted after cleanup; screen %q transcript %q", screen, transcript)
+	}
+}
+
+func TestClientAttachIsolatedDetachAfterNativePhaseRestoresCursorAndScrolling(t *testing.T) {
+	h := startModeAttach(t, bgx.AttachModeAuto, bgx.WithDetachInstructions())
+	expectResizeFrame(t, h.frames, 24, 80)
+	h.writeOutput(t, daemonSnapshot(t, "shell$ "))
+	h.waitForOutput(t, "shell$ ")
+
+	// The primary-buffer program hides the cursor before a TUI takes the
+	// alternate screen, and the user detaches while it is showing.
+	h.writeOutput(t, "\x1b[?25lls\r\n")
+	h.waitForOutput(t, "ls\r\n")
+	h.writeOutput(t, "\x1b[?1049h\x1b[2J\x1b[HEDITOR")
+	expectResizeFrame(t, h.frames, 23, 80)
+	h.waitForOutput(t, "EDITOR")
+
+	if _, err := h.input.Write([]byte{0x1C}); err != nil {
+		t.Fatalf("write detach key: %v", err)
+	}
+	output := h.wait(t, nil)
+	if !strings.HasSuffix(output, "Detached from session\r\n") {
+		t.Fatalf("output %q lacks the detach outcome", output)
+	}
+	if !strings.Contains(physicalModes(t, output), "\x1b[?25h") {
+		t.Fatalf("cursor left hidden after isolated detach; output %q", output)
+	}
+	assertUnrestrictedScrolling(t, output)
+	got, styled := renderTranscript(t, output, 80, 24)
+	if len(got) == 0 || got[0] != "shell$ ls" || got[len(got)-1] != "Detached from session" {
+		t.Fatalf("rendered screen %q, want the primary content first and the outcome last", got)
+	}
+	if strings.Contains(styled, "EDITOR") || strings.Contains(styled, "48;5;236") {
+		t.Fatalf("alternate screen or hint styling survived on the final screen: %q", styled)
+	}
+	// The session left the cursor on the row below "ls", so the outcome is
+	// printed from that preserved position.
+	assertLifecycleRestoresHistoryAndPrintsFinalState(t, output, 80, 24, []string{"shell$ ls", ""}, "Detached from session")
+}
+
+func TestClientAttachIsolatedDetachReleasesReservedScrollRegion(t *testing.T) {
+	h := startModeAttach(t, bgx.AttachModeIsolated, bgx.WithDetachInstructions())
+	expectResizeFrame(t, h.frames, 23, 80)
+	h.writeOutput(t, daemonSnapshot(t, "shell$ "))
+	h.waitForOutput(t, "\x1b[1;23r")
+
+	if _, err := h.input.Write([]byte{0x1C}); err != nil {
+		t.Fatalf("write detach key: %v", err)
+	}
+	output := h.wait(t, nil)
+	if !strings.HasSuffix(output, "Detached from session\r\n") {
+		t.Fatalf("output %q lacks the detach outcome", output)
+	}
+	assertUnrestrictedScrolling(t, output)
+	assertLifecycleRestoresHistoryAndPrintsFinalState(t, output, 80, 24, nil, "Detached from session")
 }

@@ -17,6 +17,11 @@ type attachAPITerminal struct {
 	output bytes.Buffer
 	resize chan struct{}
 
+	// inputAfter, when set, holds back terminal input until the output has
+	// contained it; inputReady is closed at that point.
+	inputAfter string
+	inputReady chan struct{}
+
 	mu       sync.Mutex
 	entered  bool
 	restored bool
@@ -29,7 +34,19 @@ func newAttachAPITerminal(input []byte) *attachAPITerminal {
 	}
 }
 
+// newAttachAPITerminalTypingAfter delivers input only once the client has
+// written marker, mirroring a user who reacts to what they see on screen.
+func newAttachAPITerminalTypingAfter(marker string, input []byte) *attachAPITerminal {
+	terminal := newAttachAPITerminal(input)
+	terminal.inputAfter = marker
+	terminal.inputReady = make(chan struct{})
+	return terminal
+}
+
 func (t *attachAPITerminal) Read(p []byte) (int, error) {
+	if t.inputReady != nil {
+		<-t.inputReady
+	}
 	return t.input.Read(p)
 }
 
@@ -43,7 +60,15 @@ func (t *attachAPITerminal) ReadContext(ctx context.Context, p []byte) (int, err
 func (t *attachAPITerminal) Write(p []byte) (int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.output.Write(p)
+	n, err := t.output.Write(p)
+	if t.inputReady != nil && strings.Contains(t.output.String(), t.inputAfter) {
+		select {
+		case <-t.inputReady:
+		default:
+			close(t.inputReady)
+		}
+	}
+	return n, err
 }
 
 func (t *attachAPITerminal) Size() (uint16, uint16, error) {
@@ -87,7 +112,9 @@ func TestAttachAPIUsesLocalSessionAndOptions(t *testing.T) {
 	}
 	t.Cleanup(func() { killSession(t, id) })
 
-	terminal := newAttachAPITerminal([]byte{0x1C})
+	// Presentation is lazy in auto mode, so the hint only appears once the
+	// initial session state has arrived; detach after seeing it.
+	terminal := newAttachAPITerminalTypingAfter("detach: ctrl+\\", []byte{0x1C})
 	err := Attach(ctx, id, AttachOptions{
 		ShowDetachInstructions: true,
 		Terminal:               terminal,
@@ -239,11 +266,86 @@ func TestAttachAPIRejectsInvalidOptions(t *testing.T) {
 			},
 			want: "via requires a command",
 		},
+		{
+			name: "unknown mode",
+			id:   "session",
+			options: AttachOptions{
+				Mode:     AttachMode("hybrid"),
+				Terminal: terminal,
+			},
+			want: `unknown mode "hybrid"`,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := Attach(context.Background(), test.id, test.options)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("Attach error = %v, want mention of %q", err, test.want)
+			}
+			var optionsErr *AttachOptionsError
+			if !errors.As(err, &optionsErr) {
+				t.Fatalf("Attach error = %T, want AttachOptionsError", err)
+			}
+		})
+	}
+}
+
+// TestAttachAPIRejectsUnknownModeBeforeConnecting verifies an invalid mode is
+// reported as an options error without dialing, entering raw mode, or writing
+// to the terminal, for both the high-level and client-level entry points.
+func TestAttachAPIRejectsUnknownModeBeforeConnecting(t *testing.T) {
+	ctx := context.Background()
+	id := "attachapi/unknown-mode"
+	if _, err := Run(id, []string{"cat"}, RunSpec{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	t.Cleanup(func() { killSession(t, id) })
+
+	terminal := newAttachAPITerminal([]byte{0x1C})
+	err := Attach(ctx, id, AttachOptions{Mode: AttachMode("hybrid"), Terminal: terminal})
+	var optionsErr *AttachOptionsError
+	if !errors.As(err, &optionsErr) {
+		t.Fatalf("Attach error = %T %v, want AttachOptionsError", err, err)
+	}
+	if output, entered, restored := terminal.state(); output != "" || entered || restored {
+		t.Fatalf("terminal touched before validation: output=%q entered=%v restored=%v", output, entered, restored)
+	}
+
+	dialed := false
+	client := NewClient(func(context.Context) (io.ReadWriteCloser, error) {
+		dialed = true
+		return nil, errors.New("dial must not run")
+	})
+	err = client.Attach(ctx, terminal, WithAttachMode(AttachMode("hybrid")))
+	if !errors.As(err, &optionsErr) {
+		t.Fatalf("Client.Attach error = %T %v, want AttachOptionsError", err, err)
+	}
+	if dialed {
+		t.Fatal("Client.Attach dialed despite an invalid mode")
+	}
+}
+
+// TestAttachAPIModesAreAccepted verifies every supported mode, including the
+// zero value standing in for auto, attaches and detaches successfully.
+func TestAttachAPIModesAreAccepted(t *testing.T) {
+	ctx := context.Background()
+	for _, mode := range []AttachMode{"", AttachModeAuto, AttachModeIsolated, AttachModeNative} {
+		t.Run(string(mode), func(t *testing.T) {
+			id := "attachapi/mode-" + string(mode) + "-default"
+			if mode != "" {
+				id = "attachapi/mode-" + string(mode)
+			}
+			if _, err := Run(id, []string{"cat"}, RunSpec{}); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			t.Cleanup(func() { killSession(t, id) })
+
+			terminal := newAttachAPITerminal([]byte{0x1C})
+			err := Attach(ctx, id, AttachOptions{Mode: mode, Terminal: terminal})
+			if err != nil {
+				t.Fatalf("Attach with mode %q: %v", mode, err)
+			}
+			if _, entered, restored := terminal.state(); !entered || !restored {
+				t.Fatalf("terminal raw state = entered %v, restored %v; want both true", entered, restored)
 			}
 		})
 	}

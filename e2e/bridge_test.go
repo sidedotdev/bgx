@@ -352,6 +352,19 @@ func TestAttachViaReportsRemoteMissingAndEndedSessions(t *testing.T) {
 	assertSingleJSONError(t, res, "session_ended", "already ended")
 }
 
+func TestAttachRejectsUnknownMode(t *testing.T) {
+	dir := runDir(t)
+	for _, args := range [][]string{
+		{"attach", "--mode", "hybrid", "x"},
+		{"attach", "x", "--mode", "hybrid"},
+	} {
+		res := bgxIn(t, dir, args...)
+		assertSingleJSONError(t, res, "invalid_argument", `unknown mode "hybrid"`)
+	}
+	res := bgxIn(t, dir, "attach", "x", "--mode")
+	assertSingleJSONError(t, res, "invalid_argument", "--mode requires a value")
+}
+
 func TestAttachRejectsBothSSHAndVia(t *testing.T) {
 	dir := runDir(t)
 	res := bgxIn(t, dir, "attach", "x", "--ssh", "host", "--via", "true")

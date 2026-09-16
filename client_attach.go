@@ -18,6 +18,7 @@ import (
 )
 
 type attachConfig struct {
+	mode                   AttachMode
 	showDetachInstructions bool
 }
 
@@ -43,6 +44,15 @@ func WithDetachInstructions() AttachOption {
 	}
 }
 
+// WithAttachMode selects the presentation mode; the zero value means
+// AttachModeAuto. Unknown modes make Attach fail with an AttachOptionsError
+// before it touches the terminal or the session.
+func WithAttachMode(mode AttachMode) AttachOption {
+	return func(cfg *attachConfig) {
+		cfg.mode = mode
+	}
+}
+
 // Attach connects terminal to the session until it ends, the user detaches, the
 // terminal input closes, or ctx is canceled.
 func (c *Client) Attach(ctx context.Context, terminal Terminal, options ...AttachOption) (retErr error) {
@@ -60,6 +70,11 @@ func (c *Client) Attach(ctx context.Context, terminal Terminal, options ...Attac
 			option(&cfg)
 		}
 	}
+	mode, err := cfg.mode.normalized()
+	if err != nil {
+		return &AttachOptionsError{Err: err}
+	}
+	cfg.mode = mode
 
 	conn, err := c.dial(ctx)
 	if err != nil {
@@ -202,14 +217,21 @@ func finalAttachScreenPrefix(snapshot attachSnapshot) string {
 }
 
 func finalAttachOutcomePrefix(snapshot attachSnapshot) string {
-	const cleanup = "\x1b[?25h\x1b[0m"
+	return "\x1b[?25h\x1b[0m" + finalAttachOutcomePosition(snapshot)
+}
+
+// finalAttachOutcomePosition moves the cursor to the first row below the
+// session's final output so the outcome line never overwrites it; when the
+// screen is full or its geometry unknown, the outcome scrolls in below. The
+// target row is erased first, since a native detach hint may occupy it.
+func finalAttachOutcomePosition(snapshot attachSnapshot) string {
 	if snapshot.cols == 0 || snapshot.rows == 0 || snapshot.physicalRows == 0 {
-		return cleanup + "\r\n"
+		return "\r\n"
 	}
 	if snapshot.writtenRows < snapshot.physicalRows {
-		return fmt.Sprintf("%s\x1b[%d;1H", cleanup, snapshot.writtenRows+1)
+		return fmt.Sprintf("\x1b[%d;1H\x1b[2K", snapshot.writtenRows+1)
 	}
-	return fmt.Sprintf("%s\x1b[%d;1H\r\n", cleanup, snapshot.physicalRows)
+	return fmt.Sprintf("\x1b[%d;1H\r\n", snapshot.physicalRows)
 }
 
 func runTerminalAttach(
@@ -255,89 +277,33 @@ func runTerminalAttach(
 		return nil
 	}
 
-	sessionRows := uint16(vt.DefaultRows)
-	if cfg.showDetachInstructions && sessionRows > 1 {
-		sessionRows--
-	}
-	screen, err := vt.New(vt.DefaultCols, sessionRows)
+	term, err := vt.New(vt.DefaultCols, vt.DefaultRows)
 	if err != nil {
 		return fmt.Errorf("attach: initialize terminal state: %w", err)
 	}
-	defer screen.Close()
+	defer term.Close()
+	models := newAttachModels(term, cfg, writeOut, writeBytes)
 
-	models := &attachModels{
-		screen:       screen,
-		cols:         vt.DefaultCols,
-		rows:         sessionRows,
-		physicalRows: vt.DefaultRows,
-	}
-
-	var view *attachView
 	var detached, sessionEnded atomic.Bool
 	var remoteStreamTerminated bool
 	defer func() {
-		if view != nil {
-			if err := view.close(); err != nil {
-				retErr = errors.Join(retErr, err)
-			}
+		outcome := attachOutcomeAborted
+		switch {
+		case detached.Load():
+			outcome = attachOutcomeDetached
+		case sessionEnded.Load():
+			outcome = attachOutcomeSessionEnded
+		case remoteStreamTerminated:
+			outcome = attachOutcomeDisconnected
 		}
-
-		if detached.Load() {
-			if err := writeOut("\x1b[?1049l"); err != nil {
-				retErr = errors.Join(retErr, err)
-			}
-			if err := writeOut("\r\nDetached from session\r\n"); err != nil {
-				retErr = errors.Join(retErr, err)
-			}
-			return
-		}
-
-		if sessionEnded.Load() || remoteStreamTerminated {
-			snapshot, err := models.snapshot()
-			if err != nil {
-				retErr = errors.Join(retErr, fmt.Errorf("attach: render final terminal state: %w", err))
-			}
-			if err := writeOut(finalAttachScreenPrefix(snapshot)); err != nil {
-				retErr = errors.Join(retErr, err)
-				return
-			}
-			if len(snapshot.contents) > 0 {
-				if err := writeBytes(snapshot.contents); err != nil {
-					retErr = errors.Join(retErr, err)
-				}
-			}
-			if err := writeOut(finalAttachOutcomePrefix(snapshot)); err != nil {
-				retErr = errors.Join(retErr, err)
-			}
-			message := "Disconnected from session\r\n"
-			if sessionEnded.Load() {
-				message = "Session ended\r\n"
-			}
-			if err := writeOut(message); err != nil {
-				retErr = errors.Join(retErr, err)
-			}
-			return
-		}
-
-		if err := writeOut("\x1b[?1049l"); err != nil {
+		if err := models.finish(outcome); err != nil {
 			retErr = errors.Join(retErr, err)
 		}
 	}()
 
-	if err := writeOut("\x1b[?1049h\x1b[2J\x1b[H"); err != nil {
+	if err := models.start(); err != nil {
 		return err
 	}
-
-	view, err = newAttachView(
-		writeOut,
-		vt.DefaultCols,
-		vt.DefaultRows,
-		cfg.showDetachInstructions,
-	)
-	if err != nil {
-		return err
-	}
-	models.view = view
 
 	var writeMu sync.Mutex
 	send := func(tag daemon.FrameTag, payload []byte) error {
@@ -398,7 +364,11 @@ func runTerminalAttach(
 			}
 			switch tag {
 			case daemon.FrameOutput:
-				err = models.applyOutput(payload)
+				var resized bool
+				resized, err = models.applyOutput(payload)
+				if err == nil && resized {
+					err = sendSize()
+				}
 			case daemon.FrameResize:
 				err = sendSize()
 			case daemon.FrameEnded:
@@ -455,10 +425,7 @@ func runTerminalAttach(
 		}
 	}()
 
-	var viewErr <-chan error
-	if view != nil {
-		viewErr = view.errs
-	}
+	viewErr := models.viewErrs
 
 	var result error
 	var resizeErrSelected, frameDone, inputDone bool

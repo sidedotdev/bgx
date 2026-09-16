@@ -206,9 +206,10 @@ func (r *runner) attachCommand() *urfave.Command {
 	return &urfave.Command{
 		Name:         "attach",
 		Usage:        "attach to a running session",
-		ArgsUsage:    "[--ssh <host>] <id> [--show-detach-instructions] [--via <cmd...>]",
+		ArgsUsage:    "<id> [--mode <mode>] [--ssh <host>] [--show-detach-instructions] [--via <cmd...>]",
 		StopOnNthArg: &stopAfterID,
 		Flags: []urfave.Flag{
+			&urfave.StringFlag{Name: "mode", Usage: "presentation: auto (default), isolated, or native"},
 			&urfave.BoolFlag{Name: "show-detach-instructions"},
 			&urfave.StringFlag{Name: "ssh"},
 		},
@@ -401,6 +402,7 @@ func (r *runner) attachAction(ctx context.Context, cmd *urfave.Command) error {
 		return failJSON(codeInvalidArgument, "attach: an id is required")
 	}
 	opts := bgx.AttachOptions{
+		Mode:                   bgx.AttachMode(cmd.String("mode")),
 		ShowDetachInstructions: cmd.Bool("show-detach-instructions"),
 		SSH:                    cmd.String("ssh"),
 	}
@@ -409,6 +411,12 @@ func (r *runner) attachAction(ctx context.Context, cmd *urfave.Command) error {
 		switch rest[i] {
 		case "--show-detach-instructions":
 			opts.ShowDetachInstructions = true
+		case "--mode":
+			if i == len(rest)-1 {
+				return failJSON(codeInvalidArgument, "attach: --mode requires a value")
+			}
+			i++
+			opts.Mode = bgx.AttachMode(rest[i])
 		case "--ssh":
 			if i == len(rest)-1 {
 				return failJSON(codeInvalidArgument, "attach: --ssh requires a host")

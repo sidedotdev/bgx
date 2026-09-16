@@ -21,6 +21,8 @@ intent_links:
       - client_api.go:Client.History
       - client_attach.go:AttachOption
       - client_attach.go:WithDetachInstructions
+      - client_attach.go:WithAttachMode
+      - attach.go:AttachMode
       - client_attach.go:Client.Attach
       - client_attach_test.go
       - client_api_test.go

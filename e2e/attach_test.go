@@ -85,13 +85,16 @@ func hintRows(rendered []string) []int {
 	return rows
 }
 
-func assertAttachLifecycleTranscriptPreservesHistory(
-	t *testing.T,
-	transcript string,
-	cols, physicalRows uint16,
-	sessionLines []string,
-	outcome string,
-) {
+// preAttachRestoredText is the unfinished prompt line present on the emulated
+// terminal when a transcript is replayed over history, so tests can locate
+// where the pre-attach content ends.
+const preAttachRestoredText = "shell prompt> draft"
+
+// replayAttachTranscriptOverHistory replays an attach transcript onto an
+// emulated terminal already holding more history than fits on screen plus an
+// unfinished prompt line, and returns everything the terminal retains
+// (scrollback and screen) as plain text.
+func replayAttachTranscriptOverHistory(t *testing.T, transcript string, cols, physicalRows uint16) string {
 	t.Helper()
 	emulated, err := lg.NewTerminal(
 		lg.WithSize(cols, physicalRows),
@@ -105,8 +108,7 @@ func assertAttachLifecycleTranscriptPreservesHistory(
 	for i := 0; i < int(physicalRows)+10; i++ {
 		emulated.VTWrite([]byte(fmt.Sprintf("history-%03d\r\n", i)))
 	}
-	const restoredText = "shell prompt> draft"
-	emulated.VTWrite([]byte(restoredText))
+	emulated.VTWrite([]byte(preAttachRestoredText))
 	emulated.VTWrite([]byte(transcript))
 
 	selection, err := emulated.SelectAll()
@@ -122,8 +124,19 @@ func assertAttachLifecycleTranscriptPreservesHistory(
 	if err != nil {
 		t.Fatalf("SelectionFormatString: %v", err)
 	}
+	return history
+}
 
-	restoredAt := strings.Index(history, restoredText)
+func assertAttachLifecycleTranscriptPreservesHistory(
+	t *testing.T,
+	transcript string,
+	cols, physicalRows uint16,
+	sessionLines []string,
+	outcome string,
+) {
+	t.Helper()
+	history := replayAttachTranscriptOverHistory(t, transcript, cols, physicalRows)
+	restoredAt := strings.Index(history, preAttachRestoredText)
 	if restoredAt < 0 {
 		t.Fatalf("pre-attach terminal content was lost; history=%q transcript=%q", history, transcript)
 	}
@@ -150,7 +163,7 @@ func TestAttachStreamsAndDetaches(t *testing.T) {
 	}
 	historyContains(t, dir, "att", "hello")
 
-	cmd := exec.Command(binPath, "attach", "att")
+	cmd := exec.Command(binPath, "attach", "--mode", "isolated", "att")
 	cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+dir, "XDG_STATE_HOME="+dir, "TMPDIR="+dir)
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
@@ -639,7 +652,7 @@ func TestAttachClosesOnSessionEnd(t *testing.T) {
 	}
 	historyContains(t, dir, "att2", "hello")
 
-	cmd := exec.Command(binPath, "attach", "att2")
+	cmd := exec.Command(binPath, "attach", "--mode", "isolated", "att2")
 	cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+dir, "XDG_STATE_HOME="+dir, "TMPDIR="+dir)
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
@@ -732,7 +745,7 @@ func TestAttachShowDetachInstructionsReservesLine(t *testing.T) {
 		t.Fatalf("run exit = %d, stderr=%q", res.exitCode, res.stderr)
 	}
 
-	c := startAttachE2EClient(t, dir, "hint", &pty.Winsize{Rows: 50, Cols: 120}, "--show-detach-instructions")
+	c := startAttachE2EClient(t, dir, "hint", &pty.Winsize{Rows: 50, Cols: 120}, "--mode", "isolated", "--show-detach-instructions")
 	defer closePTY(t, c.ptmx)
 
 	// The detach hint is drawn on the bottom row and a scroll region keeps
@@ -817,7 +830,7 @@ done`
 		t.Fatalf("run exit = %d, stderr=%q", res.exitCode, res.stderr)
 	}
 
-	c := startAttachE2EClient(t, dir, "wreck", &pty.Winsize{Rows: 20, Cols: 80}, "--show-detach-instructions")
+	c := startAttachE2EClient(t, dir, "wreck", &pty.Winsize{Rows: 20, Cols: 80}, "--mode", "isolated", "--show-detach-instructions")
 	defer closePTY(t, c.ptmx)
 
 	c.waitFor(t, "detach: ctrl+\\")
@@ -858,7 +871,7 @@ func TestAttachShowDetachInstructionsOneRowTerminal(t *testing.T) {
 		t.Fatalf("run exit = %d, stderr=%q", res.exitCode, res.stderr)
 	}
 
-	c := startAttachE2EClient(t, dir, "hint1", &pty.Winsize{Rows: 20, Cols: 120}, "--show-detach-instructions")
+	c := startAttachE2EClient(t, dir, "hint1", &pty.Winsize{Rows: 20, Cols: 120}, "--mode", "isolated", "--show-detach-instructions")
 	defer closePTY(t, c.ptmx)
 
 	c.waitFor(t, "detach: ctrl+\\")

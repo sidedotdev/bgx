@@ -664,14 +664,11 @@ func (s *Session) info() *Info {
 	return info
 }
 
-// snapshot renders the current visible terminal state as VT sequences a client
-// can replay to reproduce the screen before live output streaming begins.
+// snapshot renders the complete terminal state (both screens, active screen,
+// cursor and input modes) as VT sequences a client can replay, without
+// resetting its terminal, before live output streaming begins or resumes.
 func (s *Session) snapshot() ([]byte, error) {
-	dump, err := s.term.DumpScreen()
-	if err != nil {
-		return nil, err
-	}
-	return append([]byte("\x1bc"), dump...), nil
+	return s.term.Snapshot()
 }
 
 // resize updates both the PTY window size and the emulated terminal so attach

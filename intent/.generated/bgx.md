@@ -16,10 +16,19 @@ intent_links:
   - intent: "#terminal-state"
     code:
       - vt/vt.go:Terminal
+      - vt/vt.go:Terminal.Snapshot
+      - vt/vt.go:SnapshotPrefix
       - daemon/daemon.go:Session
+      - daemon/daemon.go:Session.snapshot
   - intent: "#attach-handoff"
     code:
       - attach.go:Attach
+      - attach.go:AttachMode
+      - attachmodels.go:attachModels
+      - attachmodels.go:attachModels.applyOutput
+      - attachmodels.go:attachModels.finish
+      - e2e/attach_modes_test.go
+      - e2e/attach_test.go:replayAttachTranscriptOverHistory
       - attach.go:startTransportProcess
       - attach.go:transportConn.Close
       - daemon/attach.go:serveAttach
@@ -127,42 +136,61 @@ base64 in the JSON response and written raw to stdout by the client.
 ## Terminal state
 
 The daemon maintains a libghostty-vt terminal fed every PTY output byte
-alongside the scrollback store, fixed at an 80x24 default size. Attach uses
-`DumpScreen` for the initial snapshot; the attach leader controls PTY and vt
-size via Resize frames. The daemon answers Device Attributes queries itself when
-no client is attached so interactive programs don't hang.
+alongside the scrollback store, fixed at an 80x24 default size. The `vt`
+wrapper tracks the active screen (47/1047/1049) and a small set of DEC private
+modes locally, so `Snapshot` can serialize both screens, cursor and modes
+without RIS or scrollback erasure (`vt.SnapshotPrefix` leaves any alternate
+screen and clears only the visible screen). Attach uses `Snapshot` for initial
+and skip-forward states; the attach leader controls PTY and vt size via Resize
+frames. The daemon answers Device Attributes queries itself when no client is
+attached so interactive programs don't hang.
 
 ## Attach handoff
 
-A client joining a live session receives an ordinary Output frame containing
-RIS followed by a point-in-time `DumpScreen` rendering, then the raw output
-stream. To avoid losing or duplicating output produced between rendering the
+A client joining a live session receives an ordinary Output frame containing a
+`vt.SnapshotPrefix`-led point-in-time `Snapshot`, then the raw output stream.
+To avoid losing or duplicating output produced between rendering the
 snapshot and subscribing to the stream, `serveAttach` captures the snapshot and
 joins the output fanout under the same `outMu` that `pumpOutput` holds while
 writing each chunk to the terminal and fanning it out. Each PTY chunk therefore
 lands entirely before the snapshot (reflected in it, not streamed) or entirely
 after the subscription (streamed, not in the snapshot), so a client's snapshot
 and stream tile the full session output with no gap or overlap. If a client
-falls behind, its queued output is replaced with a newer RIS-prefixed snapshot,
-also carried as an ordinary Output frame, before live streaming resumes.
+falls behind, its queued output is replaced with a newer snapshot, also carried
+as an ordinary Output frame, before live streaming resumes.
 `TestAttachSnapshotStreamCoversEntireOutput` and
 `TestSlowClientResyncsInsteadOfDisconnect` guard these invariants.
 
-With `--show-detach-instructions` the client cannot forward session bytes to the
-physical terminal, because the stream may clear the screen, reset scrolling
-margins, address the cursor absolutely or switch to the alternate screen, any of
-which would corrupt the reserved line. Instead the client keeps its own
-libghostty-vt terminal sized to cols x (rows-1) — the size it also advertises to
-the daemon — feeds every Output frame into it, and paints its `DumpScreen` plus
-the hint as a single coalesced redraw. RIS-prefixed snapshots reset this local
-terminal in-band. A terminal with only one row reserves nothing and gets the
-full size.
+The client always mirrors the session in its own `vt.Terminal` (`attachModels`)
+and chooses a presentation for it. Snapshots are absorbed model-only and then
+presented from the model, so the outer terminal never replays screen switches
+the session merely passed through.
 
-When a session ends or its daemon disconnects, the client leaves the alternate
-screen, moves the restored normal screen into existing scrollback without
-erasing it, replays the complete final session state, and prints the lifecycle
-outcome on the following line. End-to-end regressions replay real attach
-transcripts over populated terminal history for both paths.
+- Isolated presentation claims a protected alternate screen and paints the
+  model's `DumpScreen` as coalesced full repaints (`attachView`); raw session
+  bytes never reach the outer terminal. With `--show-detach-instructions` the
+  bottom row is reserved for a styled hint and cols x (rows-1) is advertised to
+  the daemon (a one-row terminal reserves nothing). Detach restores the
+  pre-attach screen; end/disconnect leaves the alternate screen, moves the
+  restored normal screen into existing scrollback, replays the final session
+  state and prints the outcome below it.
+- Native presentation uses the normal buffer: on the first presented bytes the
+  pre-attach screen is scrolled into scrollback, then session bytes are
+  forwarded raw with the full height advertised. The hint, if enabled, is drawn
+  once (plus a best-effort title) and never reserved. Cleanup leaves any session
+  alternate screen, withdraws tracked input-reporting modes, restores cursor,
+  pen and scroll region, and prints the outcome after the written rows; it never
+  writes RIS or `3J`.
+- Auto starts from the snapshot's active screen and follows switches
+  (`WriteUntilScreenSwitch`) in live output and resynchronizations: primary is
+  presented natively, alternate in isolation. Each transition re-advertises the
+  height and sends a Resize frame; cleanup follows the presentation at exit.
+
+End-to-end regressions in `e2e/attach_modes_test.go` drive real `bgx attach`
+processes under a pty per mode and rendering technique (plain output,
+primary-buffer cursor-addressed TUIs, alternate-screen entry/exit, joining a
+session already on its alternate screen) and replay the transcripts over
+populated terminal history.
 
 ## Send and wait semantics
 

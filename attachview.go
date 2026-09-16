@@ -1,7 +1,6 @@
 package bgx
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -21,114 +20,68 @@ const detachHint = " detach: ctrl+\\ "
 // from session content.
 const detachHintStyle = "\x1b[48;5;236;38;5;250m"
 
-// attachView renders session output through a client-local terminal so the
-// bottom line of the physical terminal can be reserved for the detach hint.
-// Session bytes are never forwarded to the physical terminal: only the rendered
-// screen of the local terminal is painted, so destructive sequences in the
-// stream (screen clears, scroll-region changes, absolute cursor addressing, the
-// alternate screen, or escapes split across frames) cannot reach — and so
-// cannot corrupt — the reserved line.
+// attachView paints the isolated presentation: the rendered screen of the
+// shared client-local terminal is redrawn onto the physical terminal so its
+// bottom line can be reserved for the detach hint. Session bytes are never
+// forwarded to the physical terminal in this presentation: only the rendered
+// screen is painted, so destructive sequences in the stream (screen clears,
+// scroll-region changes, absolute cursor addressing, the alternate screen, or
+// escapes split across frames) cannot reach — and so cannot corrupt — the
+// reserved line.
 type attachView struct {
 	write   func(string) error
+	term    *vt.Terminal
 	wake    chan struct{}
 	done    chan struct{}
 	stopped chan struct{}
-	errs    chan error
+	errs    chan<- error
 
-	mu                     sync.Mutex
-	term                   *vt.Terminal
-	cols                   uint16
-	rows                   uint16
-	showDetachInstructions bool
-	reserved               bool
-	closed                 bool
+	mu       sync.Mutex
+	rows     uint16
+	reserved bool
+	closed   bool
 }
 
-// newAttachView starts a view for a physical terminal of the given size. The
-// returned view must be closed to stop painting.
+// newAttachView starts painting term, whose state is owned and advanced by the
+// caller, onto a physical terminal whose session area is rows tall. Painting
+// failures are reported on errs without blocking. The returned view must be
+// closed to stop painting.
 func newAttachView(
 	write func(string) error,
-	cols, physicalRows uint16,
-	showDetachInstructions bool,
-) (*attachView, error) {
+	term *vt.Terminal,
+	errs chan<- error,
+	rows uint16,
+	reserved bool,
+) *attachView {
 	v := &attachView{
-		write:                  write,
-		wake:                   make(chan struct{}, 1),
-		done:                   make(chan struct{}),
-		stopped:                make(chan struct{}),
-		errs:                   make(chan error, 1),
-		showDetachInstructions: showDetachInstructions,
-	}
-	if _, err := v.setSize(cols, physicalRows); err != nil {
-		return nil, err
-	}
-	go v.paintLoop()
-	return v, nil
-}
-
-// setSize adapts the view to the physical terminal size and reports the row
-// count to advertise to the session. The bottom line is reserved for the hint
-// whenever requested and the terminal has room for both it and the session.
-func (v *attachView) setSize(cols, physicalRows uint16) (uint16, error) {
-	if cols == 0 || physicalRows == 0 {
-		return 0, nil
-	}
-	rows := physicalRows
-	reserved := v.showDetachInstructions && physicalRows > 1
-	if reserved {
-		rows--
-	}
-
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if v.closed {
-		return rows, nil
-	}
-	changed := v.term == nil || v.cols != cols || v.rows != rows || v.reserved != reserved
-	v.cols, v.rows, v.reserved = cols, rows, reserved
-	if v.term == nil {
-		term, err := vt.New(cols, rows)
-		if err != nil {
-			return 0, fmt.Errorf("create attach view: %w", err)
-		}
-		v.term = term
-	} else if err := v.term.Resize(cols, rows); err != nil {
-		return 0, fmt.Errorf("resize attach view: %w", err)
-	}
-	if changed {
-		v.markDirty()
-	}
-	return rows, nil
-}
-
-// reservedRow reports the 1-based physical row holding the detach hint, or 0
-// when no line is reserved.
-func (v *attachView) reservedRow() int {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if !v.reserved {
-		return 0
-	}
-	return int(v.rows) + 1
-}
-
-// feed advances the view's terminal state with streamed session output.
-func (v *attachView) feed(payload []byte) error {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if v.term == nil {
-		return nil
-	}
-	if _, err := v.term.Write(payload); err != nil {
-		return fmt.Errorf("update attach view: %w", err)
+		write:    write,
+		term:     term,
+		wake:     make(chan struct{}, 1),
+		done:     make(chan struct{}),
+		stopped:  make(chan struct{}),
+		errs:     errs,
+		rows:     rows,
+		reserved: reserved,
 	}
 	v.markDirty()
-	return nil
+	go v.paintLoop()
+	return v
 }
 
-// close stops painting and releases the local terminal, flushing a repaint that
-// was still pending. It is idempotent and waits for any in-flight paint, so
-// callers can write their own sequences afterwards without interleaving.
+// setSize records the session area height and whether the line below it is
+// reserved for the hint, then schedules a repaint. The repaint is unconditional
+// because the shared terminal reflows on width changes that leave both of
+// these values untouched.
+func (v *attachView) setSize(rows uint16, reserved bool) {
+	v.mu.Lock()
+	v.rows, v.reserved = rows, reserved
+	v.mu.Unlock()
+	v.markDirty()
+}
+
+// close stops painting, flushing a repaint that was still pending. It is
+// idempotent and waits for any in-flight paint, so callers can write their own
+// sequences afterwards without interleaving.
 func (v *attachView) close() error {
 	v.mu.Lock()
 	if v.closed {
@@ -141,30 +94,17 @@ func (v *attachView) close() error {
 	close(v.done)
 	<-v.stopped
 
-	var err error
-	select {
-	case err = <-v.errs:
-	default:
-	}
-
 	// A repaint queued when the painter stopped carries the session's final
 	// output, which would otherwise never be shown.
 	select {
 	case <-v.wake:
-		err = errors.Join(err, v.paint())
+		return v.paint()
 	default:
+		return nil
 	}
-
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if v.term != nil {
-		v.term.Close()
-		v.term = nil
-	}
-	return err
 }
 
-// markDirty requests a repaint. The caller must hold v.mu.
+// markDirty requests a repaint; bursts of requests coalesce into one.
 func (v *attachView) markDirty() {
 	select {
 	case v.wake <- struct{}{}:
@@ -181,7 +121,10 @@ func (v *attachView) paintLoop() {
 		case <-v.wake:
 		}
 		if err := v.paint(); err != nil {
-			v.errs <- err
+			select {
+			case v.errs <- err:
+			default:
+			}
 			return
 		}
 		// Rate-limit repaints; requests arriving during the pause coalesce into
@@ -194,17 +137,13 @@ func (v *attachView) paintLoop() {
 	}
 }
 
-// paint redraws the whole physical screen from the local terminal state, then
+// paint redraws the whole physical screen from the shared terminal state, then
 // draws the detach hint on the reserved line.
 func (v *attachView) paint() error {
 	v.mu.Lock()
-	if v.term == nil {
-		v.mu.Unlock()
-		return nil
-	}
 	rows, reserved := v.rows, v.reserved
-	screen, err := v.term.DumpScreen()
 	v.mu.Unlock()
+	screen, err := v.term.DumpScreen()
 	if err != nil {
 		return fmt.Errorf("render attach view: %w", err)
 	}

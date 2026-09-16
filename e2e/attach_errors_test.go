@@ -257,6 +257,7 @@ func TestAttachDisconnectClearsDetachInstructionsWithoutReset(t *testing.T) {
 		dir,
 		id,
 		&pty.Winsize{Rows: 12, Cols: 40},
+		"--mode", "isolated",
 		"--show-detach-instructions",
 	)
 	defer closePTY(t, c.ptmx)

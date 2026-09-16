@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -405,6 +406,15 @@ func startTortureSession(t *testing.T, id string, cmd []string) (s *Session, soc
 // session output does.
 func attachCapture(t *testing.T, socketPath string, sentinel []byte) (snapshot, stream []byte) {
 	t.Helper()
+	return attachCaptureCounting(t, socketPath, sentinel, nil)
+}
+
+// attachCaptureCounting is attachCapture that additionally counts every
+// streamed Output frame into frames (when non-nil). Since the pump fans out one
+// frame per PTY read to every attacher, a keeping-up client's count doubles as
+// the number of frames queued for a concurrently stalled client.
+func attachCaptureCounting(t *testing.T, socketPath string, sentinel []byte, frames *atomic.Int64) (snapshot, stream []byte) {
+	t.Helper()
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
 		t.Errorf("dial: %v", err)
@@ -450,6 +460,9 @@ func attachCapture(t *testing.T, socketPath string, sentinel []byte) (snapshot, 
 			}
 			continue
 		}
+		if frames != nil {
+			frames.Add(1)
+		}
 		stream = append(stream, payload...)
 		// The sentinel is the last line, so once it and a following newline are
 		// present the stream has captured everything up to end of output. Scan
@@ -477,16 +490,17 @@ func attachCapture(t *testing.T, socketPath string, sentinel []byte) (snapshot, 
 }
 
 // assertAttachTiles verifies a single client's snapshot and stream tile the full
-// output exactly: the stream is a clean suffix and the RIS-prefixed snapshot
-// equals the rendering of the preceding prefix.
+// output exactly: the stream is a clean suffix and the SnapshotPrefix-led
+// snapshot equals the vt snapshot of the preceding prefix.
 func assertAttachTiles(t *testing.T, idx int, full, snapshot, stream []byte) {
 	t.Helper()
-	ris := []byte("\x1bc")
-	if !bytes.HasPrefix(snapshot, ris) {
-		t.Errorf("client %d: snapshot does not begin with RIS", idx)
+	if !bytes.HasPrefix(snapshot, []byte(vt.SnapshotPrefix)) {
+		t.Errorf("client %d: snapshot does not begin with the snapshot prefix", idx)
 		return
 	}
-	snapshot = snapshot[len(ris):]
+	if bytes.Contains(snapshot, []byte("\x1bc")) {
+		t.Errorf("client %d: snapshot contains a full terminal reset, which would clear the client's scrollback", idx)
+	}
 	if len(stream) > len(full) || !bytes.Equal(full[len(full)-len(stream):], stream) {
 		t.Errorf("client %d: streamed output is not a suffix of the session output (stream=%dB, full=%dB); output was lost or duplicated during the attach handoff", idx, len(stream), len(full))
 		return
@@ -516,11 +530,11 @@ func renderTorture(t *testing.T, data []byte) []byte {
 	if _, err := term.Write(data); err != nil {
 		t.Fatalf("vt write: %v", err)
 	}
-	dump, err := term.DumpScreen()
+	snap, err := term.Snapshot()
 	if err != nil {
-		t.Fatalf("dump screen: %v", err)
+		t.Fatalf("snapshot: %v", err)
 	}
-	return dump
+	return snap
 }
 
 // TestSlowClientResyncsInsteadOfDisconnect verifies that a client whose bounded
@@ -530,32 +544,36 @@ func renderTorture(t *testing.T, data []byte) []byte {
 // full output exactly.
 func TestSlowClientResyncsInsteadOfDisconnect(t *testing.T) {
 	const (
-		burst    = 20000
+		burst    = 120000
 		tail     = 60
 		sentinel = "ZZSENTINELZZ"
 	)
 	sentinelBytes := []byte(sentinel)
-	// A tight sh loop emits one wide line per write; the fast Go output pump
-	// reads each individually, so the frame count tracks the line count and a
-	// stalled client accumulates far more than attachQueue frames during its
-	// stall, forcing a skip-forward re-sync. After the burst, a slow trickle
-	// keeps output flowing well past the last re-sync so the re-synced client
-	// resumes streaming through to the sentinel (proving clean resume tiling);
-	// the trailing sleep keeps the session alive until both clients drain.
+	// A tight sh loop emits wide lines far faster than the output pump renders
+	// them. The pump fans out one frame per PTY read, and a PTY read returns at
+	// most a few KiB, so the burst (several MiB) is guaranteed to span several
+	// times attachQueue frames however the kernel coalesces it. The slow client
+	// stalls until the keeping-up client has counted more than attachQueue of
+	// those frames, so its backlog has overflowed regardless of machine speed,
+	// forcing a skip-forward re-sync. After the burst, a slow trickle keeps
+	// output flowing well past the last re-sync so the re-synced client resumes
+	// streaming through to the sentinel (proving clean resume tiling); the
+	// trailing sleep keeps the session alive until both clients drain.
 	shCmd := fmt.Sprintf(`i=0; while [ $i -lt %d ]; do printf 'b%%06d-paddingpaddingpaddingpaddingpaddingpaddingpaddingpad\n' "$i"; i=$((i+1)); done; i=0; while [ $i -lt %d ]; do printf 't%%06d-tail\n' "$i"; sleep 0.02; i=$((i+1)); done; printf '%s\n'; sleep 30`, burst, tail, sentinel)
 	s, socketPath, _, errCh := startTortureSession(t, "slowresync", []string{"sh", "-c", shCmd})
 
 	var (
 		fastSnapshot []byte
 		fastStream   []byte
+		fastFrames   atomic.Int64
 		fastDone     = make(chan struct{})
 	)
 	go func() {
 		defer close(fastDone)
-		fastSnapshot, fastStream = attachCapture(t, socketPath, sentinelBytes)
+		fastSnapshot, fastStream = attachCaptureCounting(t, socketPath, sentinelBytes, &fastFrames)
 	}()
 
-	resyncSnap, postStream, streamedOut, resynced, open := slowAttachCapture(t, socketPath, sentinelBytes)
+	resyncSnap, postStream, streamedOut, resynced, open := slowAttachCapture(t, socketPath, sentinelBytes, &fastFrames, fastDone)
 	<-fastDone
 
 	// The history op waits for all buffered writes, so it is the exact ground
@@ -599,14 +617,22 @@ func TestSlowClientResyncsInsteadOfDisconnect(t *testing.T) {
 	assertAttachTiles(t, -1, full, fastSnapshot, fastStream)
 }
 
-// slowAttachCapture performs the attach handshake, then stalls long enough for
-// its backlog to overflow and afterwards reads one frame per tick — far slower
-// than the flood — so the backlog keeps overflowing and the daemon must skip
-// this client forward. It returns the latest skip-forward snapshot, the raw
-// stream after that snapshot, all non-snapshot output after the initial state,
-// whether any skip-forward arrived, and whether the connection stayed open
-// through to the sentinel.
-func slowAttachCapture(t *testing.T, socketPath string, sentinel []byte) (resyncSnap, postStream, streamedOut []byte, resynced, open bool) {
+// slowAttachCapture performs the attach handshake, then stalls until the
+// concurrently attached keeping-up client (whose streamed frames are counted in
+// fastFrames) has received well over attachQueue frames since the handshake —
+// or has finished — so this client's backlog has overflowed. It then reads one
+// frame per tick — far slower than the flood — so the backlog keeps overflowing
+// and the daemon must skip this client forward. It returns the latest
+// skip-forward snapshot, the raw stream after that snapshot, all non-snapshot
+// output after the initial state, whether any skip-forward arrived, and whether
+// the connection stayed open through to the sentinel.
+func slowAttachCapture(
+	t *testing.T,
+	socketPath string,
+	sentinel []byte,
+	fastFrames *atomic.Int64,
+	fastDone <-chan struct{},
+) (resyncSnap, postStream, streamedOut []byte, resynced, open bool) {
 	t.Helper()
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
@@ -634,9 +660,23 @@ func slowAttachCapture(t *testing.T, socketPath string, sentinel []byte) (resync
 		return nil, nil, nil, false, false
 	}
 
-	// Stall so the burst overruns the bounded backlog before reading anything.
-	time.Sleep(500 * time.Millisecond)
-	ris := []byte("\x1bc")
+	// Stall until the burst has overrun the bounded backlog before reading
+	// anything. Frames counted before this handshake may predate this
+	// attachment, so only frames beyond that base count toward the overflow.
+	overflowAt := fastFrames.Load() + attachQueue + attachQueue/4
+	stallDeadline := time.After(30 * time.Second)
+stall:
+	for fastFrames.Load() < overflowAt {
+		select {
+		case <-fastDone:
+			break stall
+		case <-stallDeadline:
+			t.Errorf("keeping-up client saw only %d frames within the stall deadline; the burst cannot overflow the backlog", fastFrames.Load())
+			break stall
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	snapshotPrefix := []byte(vt.SnapshotPrefix)
 	gotSnapshot := false
 	for {
 		tag, payload, err := ReadFrame(br)
@@ -646,7 +686,7 @@ func slowAttachCapture(t *testing.T, socketPath string, sentinel []byte) (resync
 		if tag != FrameOutput {
 			continue
 		}
-		if bytes.HasPrefix(payload, ris) {
+		if bytes.HasPrefix(payload, snapshotPrefix) {
 			if !gotSnapshot {
 				gotSnapshot = true
 				continue
@@ -657,7 +697,7 @@ func slowAttachCapture(t *testing.T, socketPath string, sentinel []byte) (resync
 			continue
 		}
 		if !gotSnapshot {
-			t.Errorf("streamed output arrived before the initial RIS-prefixed snapshot")
+			t.Errorf("streamed output arrived before the initial snapshot")
 			return resyncSnap, postStream, streamedOut, resynced, false
 		}
 		streamedOut = append(streamedOut, payload...)
@@ -720,7 +760,7 @@ func TestSessionEndDeliversOutputThenCloses(t *testing.T) {
 	resCh := make(chan result, 1)
 	go func() {
 		var r result
-		ris := []byte("\x1bc")
+		snapshotPrefix := []byte(vt.SnapshotPrefix)
 		signaled := false
 		for {
 			tag, payload, rerr := ReadFrame(br)
@@ -729,7 +769,7 @@ func TestSessionEndDeliversOutputThenCloses(t *testing.T) {
 			}
 			switch tag {
 			case FrameOutput:
-				if bytes.HasPrefix(payload, ris) {
+				if bytes.HasPrefix(payload, snapshotPrefix) {
 					r.snapshot = payload
 					r.stream = r.stream[:0]
 				} else {

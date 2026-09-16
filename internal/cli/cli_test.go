@@ -470,6 +470,83 @@ func TestAttachAdapterPassesTrailingViaCommand(t *testing.T) {
 	}
 }
 
+func TestAttachAdapterMirrorsMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		wantMode bgx.AttachMode
+		wantVia  []string
+	}{
+		{
+			name:     "default is zero value for auto",
+			args:     []string{"session"},
+			wantMode: "",
+		},
+		{
+			name:     "mode before id",
+			args:     []string{"--mode", "native", "session"},
+			wantMode: bgx.AttachModeNative,
+		},
+		{
+			name:     "mode after id",
+			args:     []string{"session", "--mode", "isolated"},
+			wantMode: bgx.AttachModeIsolated,
+		},
+		{
+			name:     "mode after id leaves via tail untouched",
+			args:     []string{"session", "--mode", "auto", "--via", "transport", "--mode", "native"},
+			wantMode: bgx.AttachModeAuto,
+			wantVia:  []string{"transport", "--mode", "native"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ops := stubOperations()
+			var gotOpts bgx.AttachOptions
+			ops.attach = func(_ context.Context, _ string, opts bgx.AttachOptions) error {
+				gotOpts = opts
+				return nil
+			}
+
+			var stdout, stderr bytes.Buffer
+			args := append([]string{"bgx", "attach"}, test.args...)
+			err := newRunner(&stdout, &stderr, ops).run(context.Background(), args)
+			if err != nil {
+				t.Fatalf("run attach: %v, stderr=%q", err, stderr.String())
+			}
+			if gotOpts.Mode != test.wantMode {
+				t.Fatalf("Mode = %q, want %q", gotOpts.Mode, test.wantMode)
+			}
+			if !reflect.DeepEqual(gotOpts.Via, test.wantVia) {
+				t.Fatalf("Via = %v, want %v", gotOpts.Via, test.wantVia)
+			}
+		})
+	}
+}
+
+func TestAttachAdapterRejectsModeWithoutValue(t *testing.T) {
+	ops := stubOperations()
+	ops.attach = func(context.Context, string, bgx.AttachOptions) error {
+		t.Fatal("attach called despite a missing --mode value")
+		return nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := newRunner(&stdout, &stderr, ops).run(context.Background(), []string{
+		"bgx", "attach", "session", "--mode",
+	})
+	if err == nil {
+		t.Fatal("run attach returned nil error")
+	}
+	payload := decodeObject(t, stderr.Bytes())
+	if payload["code"] != codeInvalidArgument {
+		t.Fatalf("code = %v, want %q", payload["code"], codeInvalidArgument)
+	}
+	if payload["error"] != "attach: --mode requires a value" {
+		t.Fatalf("error = %v, want mode value error", payload["error"])
+	}
+}
+
 func TestAttachAdapterMapsTypedErrors(t *testing.T) {
 	tests := []struct {
 		name     string

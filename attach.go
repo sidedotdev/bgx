@@ -19,8 +19,38 @@ import (
 	"time"
 )
 
+// AttachMode selects how an attachment presents the session on the local
+// terminal.
+type AttachMode string
+
+const (
+	// AttachModeAuto follows the session's active buffer: native presentation
+	// while it is on the primary screen, isolated once it enters the alternate
+	// screen.
+	AttachModeAuto AttachMode = "auto"
+	// AttachModeIsolated renders the session inside a protected alternate
+	// screen, restoring the pre-attach screen on detach.
+	AttachModeIsolated AttachMode = "isolated"
+	// AttachModeNative forwards session output to the normal terminal buffer,
+	// keeping native scrollback and SSH-like application control.
+	AttachModeNative AttachMode = "native"
+)
+
+// normalized maps the zero value to the default mode and rejects unknown
+// modes.
+func (m AttachMode) normalized() (AttachMode, error) {
+	switch m {
+	case "", AttachModeAuto:
+		return AttachModeAuto, nil
+	case AttachModeIsolated, AttachModeNative:
+		return m, nil
+	}
+	return "", fmt.Errorf("unknown mode %q (want auto, isolated, or native)", string(m))
+}
+
 // AttachOptions configures an interactive attachment.
 type AttachOptions struct {
+	Mode                   AttachMode
 	ShowDetachInstructions bool
 	SSH                    string
 	Via                    []string
@@ -55,6 +85,10 @@ func Attach(ctx context.Context, id string, opts AttachOptions) error {
 	}
 	if opts.Via != nil && len(opts.Via) == 0 {
 		return &AttachOptionsError{Err: errors.New("--via requires a command")}
+	}
+	mode, err := opts.Mode.normalized()
+	if err != nil {
+		return &AttachOptionsError{Err: err}
 	}
 
 	terminal := opts.Terminal
@@ -100,11 +134,11 @@ func Attach(ctx context.Context, id string, opts AttachOptions) error {
 		}
 	}
 
-	var options []AttachOption
+	options := []AttachOption{WithAttachMode(mode)}
 	if opts.ShowDetachInstructions {
 		options = append(options, WithDetachInstructions())
 	}
-	err := NewClient(dial).Attach(ctx, terminal, options...)
+	err = NewClient(dial).Attach(ctx, terminal, options...)
 	if err == nil {
 		return nil
 	}
