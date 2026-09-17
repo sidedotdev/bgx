@@ -292,7 +292,20 @@ main() {
 
 	if ! gh run watch "$run_id" --exit-status; then
 		sync_logs "$run_id"
-		fail "workflow run $run_id failed"
+		local status conclusion
+		IFS=$'\t' read -r status conclusion < <(
+			gh run view "$run_id" --json status,conclusion \
+				--jq '[.status, .conclusion] | @tsv'
+		)
+		if [ "$status" != completed ] || [ "$conclusion" != failure ]; then
+			fail "workflow run $run_id did not complete successfully"
+		fi
+		echo "release.sh: retrying failed jobs in workflow run $run_id" >&2
+		gh run rerun "$run_id" --failed || fail "could not retry workflow run $run_id"
+		if ! gh run watch "$run_id" --exit-status; then
+			sync_logs "$run_id"
+			fail "workflow run $run_id failed after retry"
+		fi
 	fi
 
 	verify_assets "$tag"

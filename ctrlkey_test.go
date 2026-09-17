@@ -40,7 +40,7 @@ func TestDetachScannerDetectsSplitSequence(t *testing.T) {
 }
 
 // TestDetachScannerForwardsRegularInput ensures ordinary input passes straight
-// through and that a lone trailing ESC (a real Escape keypress) is not withheld.
+// through and a lone Escape can be flushed when the continuation wait expires.
 func TestDetachScannerForwardsRegularInput(t *testing.T) {
 	var d detachScanner
 
@@ -50,8 +50,14 @@ func TestDetachScannerForwardsRegularInput(t *testing.T) {
 	}
 
 	forward, detach = d.feed([]byte{0x1b})
-	if detach || len(forward) != 1 || forward[0] != 0x1b {
-		t.Fatalf("lone ESC withheld: %q, detach=%v", forward, detach)
+	if detach || len(forward) != 0 {
+		t.Fatalf("incomplete Escape sequence forwarded: %q, detach=%v", forward, detach)
+	}
+	if forward := d.flush(); string(forward) != "\x1b" {
+		t.Fatalf("flush = %q, want Escape", forward)
+	}
+	if forward := d.flush(); len(forward) != 0 {
+		t.Fatalf("repeated flush duplicated input: %q", forward)
 	}
 }
 

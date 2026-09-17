@@ -110,7 +110,10 @@ func TestAttachAPIUsesLocalSessionAndOptions(t *testing.T) {
 	if _, err := Run(id, []string{"cat"}, RunSpec{}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	t.Cleanup(func() { killSession(t, id) })
+	t.Cleanup(func() {
+		killSession(t, id)
+		waitEnded(t, id)
+	})
 
 	// Presentation is lazy in auto mode, so the hint only appears once the
 	// initial session state has arrived; detach after seeing it.

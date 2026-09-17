@@ -2815,3 +2815,60 @@ func TestClientAttachIsolatedDetachReleasesReservedScrollRegion(t *testing.T) {
 	assertUnrestrictedScrolling(t, output)
 	assertLifecycleRestoresHistoryAndPrintsFinalState(t, output, 80, 24, nil, "Detached from session")
 }
+
+type peerDetachEOFStream struct {
+	*closeEOFStream
+	writeReleased chan struct{}
+	releaseOnce   sync.Once
+}
+
+func (s *peerDetachEOFStream) Write(p []byte) (int, error) {
+	n, err := s.closeEOFStream.Write(p)
+	if len(p) == 5 && p[0] == byte(daemon.FrameDetach) {
+		// The peer can close after receiving detach, before Write returns.
+		if closeErr := s.closeEOFStream.Close(); closeErr != nil {
+			return n, closeErr
+		}
+		<-s.writeReleased
+	}
+	return n, err
+}
+
+func (s *peerDetachEOFStream) Close() error {
+	s.releaseOnce.Do(func() { close(s.writeReleased) })
+	return s.closeEOFStream.Close()
+}
+
+func TestClientAttachDetachHandlesPeerEOFBeforeWriteReturns(t *testing.T) {
+	unexpected := errors.New("unexpected peer read failure")
+	for _, readErr := range []error{nil, unexpected} {
+		name := "EOF"
+		if readErr != nil {
+			name = "EOF with unrelated error"
+		}
+		t.Run(name, func(t *testing.T) {
+			stream := &peerDetachEOFStream{
+				closeEOFStream: newCloseEOFStream(),
+				writeReleased:  make(chan struct{}),
+			}
+			stream.readErr = readErr
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			err := bgx.NewClient(func(context.Context) (io.ReadWriteCloser, error) {
+				return stream, nil
+			}).Attach(ctx, newTestTerminal(bytes.NewReader([]byte{0x1C})))
+			if ctx.Err() != nil {
+				t.Fatalf("Attach did not complete before timeout: %v", err)
+			}
+			if readErr == nil && err != nil {
+				t.Fatalf("Attach after detach: %v", err)
+			}
+			if readErr != nil && !errors.Is(err, readErr) {
+				t.Fatalf("Attach error = %v, want %v", err, readErr)
+			}
+			if errors.Is(err, io.EOF) {
+				t.Fatalf("Attach retained expected detach EOF: %v", err)
+			}
+		})
+	}
+}

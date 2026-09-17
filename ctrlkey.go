@@ -7,15 +7,11 @@ package bgx
 // raw control byte 0x1C or as a Kitty keyboard protocol CSI u sequence. It is
 // the detach key for attach, ported from zmx's util.isCtrlBackslash.
 func isCtrlBackslash(buf []byte) bool {
-	if len(buf) == 0 {
-		return false
-	}
-	if buf[0] == 0x1C {
-		return true
-	}
-	// Scan for a CSI u sequence anywhere in the buffer (input may be batched).
-	for i := 0; i+2 < len(buf); i++ {
-		if buf[i] == 0x1b && buf[i+1] == '[' && keypressWithMod(buf[i+2:], 0x5c, 0b100) {
+	for i := range buf {
+		if buf[i] == 0x1c {
+			return true
+		}
+		if i+2 < len(buf) && buf[i] == 0x1b && buf[i+1] == '[' && keypressWithMod(buf[i+2:], 0x5c, 0b100) {
 			return true
 		}
 	}
@@ -139,9 +135,12 @@ func ctrlBackslashSuffixLen(buf []byte) int {
 
 // ctrlBackslashPrefix reports whether s, which begins with ESC, is an incomplete
 // prefix that could still grow into a ctrl+\ keypress (CSI key-code 92 with the
-// ctrl modifier). A lone ESC is treated as a real Escape key rather than held so
-// interactive use is unaffected.
+// ctrl modifier). Attach bounds the wait for a continuation so a real Escape
+// keypress cannot remain buffered indefinitely.
 func ctrlBackslashPrefix(s []byte) bool {
+	if len(s) == 1 {
+		return true
+	}
 	if len(s) < 2 || s[1] != '[' {
 		return false
 	}
@@ -163,4 +162,10 @@ func ctrlBackslashPrefix(s []byte) bool {
 // isPrefixOf reports whether b is a prefix of s.
 func isPrefixOf(b []byte, s string) bool {
 	return len(b) <= len(s) && string(b) == s[:len(b)]
+}
+
+func (d *detachScanner) flush() []byte {
+	pending := d.pending
+	d.pending = nil
+	return pending
 }

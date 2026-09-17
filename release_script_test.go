@@ -65,6 +65,12 @@ bgx-darwin-amd64}"
 	"run view "*"--json status,conclusion"*)
 		printf '%s\n' "${MOCK_RUN_RESULT:-completed	failure}"
 		;;
+	"run watch "*)
+		if grep -q '^gh run rerun ' "$COMMAND_LOG"; then
+			exit "${MOCK_RETRY_EXIT:-0}"
+		fi
+		exit "${MOCK_WATCH_EXIT:-0}"
+		;;
 esac
 `)
 
@@ -352,6 +358,40 @@ func TestReleaseScriptStopsWhenTagPreparationFails(t *testing.T) {
 				if strings.Contains(output, command) {
 					t.Errorf("failed preparation continued with %q:\n%s", command, output)
 				}
+			}
+		})
+	}
+}
+
+func TestReleaseScriptRetriesOnlyFailedJobs(t *testing.T) {
+	for _, retryFails := range []bool{false, true} {
+		t.Run(strconv.FormatBool(retryFails), func(t *testing.T) {
+			t.Setenv("MOCK_LOCAL_TAG_EXISTS", "true")
+			t.Setenv("MOCK_REMOTE_TAG_EXISTS", "true")
+			t.Setenv("MOCK_WATCH_EXIT", "1")
+			if retryFails {
+				t.Setenv("MOCK_RETRY_EXIT", "1")
+			} else {
+				t.Setenv("MOCK_RETRY_EXIT", "0")
+			}
+
+			output, stderr, err := runReleaseScript(t, "v1.2.3")
+			if (err != nil) != retryFails {
+				t.Fatalf("release error = %v, want failure %v\n%s", err, retryFails, stderr)
+			}
+			if strings.Count(output, "gh run rerun ") != 1 ||
+				!strings.Contains(output, "gh run rerun 123 --failed\n") {
+				t.Fatalf("expected exactly one failed-job-only retry:\n%s", output)
+			}
+			if strings.Count(output, "gh run watch 123 --exit-status\n") != 2 {
+				t.Fatalf("expected to watch the original run and its retry:\n%s", output)
+			}
+			promoted := strings.Contains(output, "release edit v1.2.3 --prerelease=false --latest")
+			if promoted == retryFails {
+				t.Fatalf("promoted = %v, retry failed = %v:\n%s", promoted, retryFails, output)
+			}
+			if retryFails && !strings.Contains(output, "gh run view 123 --log\n") {
+				t.Fatalf("missing failure logs:\n%s", output)
 			}
 		})
 	}

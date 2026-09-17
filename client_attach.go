@@ -385,49 +385,16 @@ func runTerminalAttach(
 
 	inputErr := make(chan error, 1)
 	go func() {
-		buf := make([]byte, 64<<10)
-		var scanner detachScanner
-		for {
-			n, err := terminal.ReadContext(attachCtx, buf)
-			if n > 0 {
-				forward, detach := scanner.feed(buf[:n])
-				if len(forward) > 0 {
-					if sendErr := send(daemon.FrameInput, forward); sendErr != nil {
-						inputErr <- sendErr
-						return
-					}
-				}
-				if detach {
-					if sendErr := send(daemon.FrameDetach, nil); sendErr != nil {
-						inputErr <- sendErr
-						return
-					}
-					detached.Store(true)
-					if err != nil && !errors.Is(err, io.EOF) {
-						inputErr <- errors.Join(
-							errAttachDetached,
-							fmt.Errorf("attach: read terminal: %w", err),
-						)
-					} else {
-						inputErr <- errAttachDetached
-					}
-					return
-				}
-			}
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					inputErr <- nil
-				} else {
-					inputErr <- fmt.Errorf("attach: read terminal: %w", err)
-				}
-				return
-			}
+		err := runAttachInput(attachCtx, terminal, send)
+		if errors.Is(err, errAttachDetached) {
+			detached.Store(true)
 		}
+		inputErr <- err
 	}()
 
 	viewErr := models.viewErrs
 
-	var result error
+	var result, frameResult error
 	var resizeErrSelected, frameDone, inputDone bool
 	select {
 	case <-ctx.Done():
@@ -435,8 +402,7 @@ func runTerminalAttach(
 	case err := <-resizeErr:
 		result = err
 		resizeErrSelected = true
-	case err := <-frameErr:
-		result = err
+	case frameResult = <-frameErr:
 		frameDone = true
 	case err := <-inputErr:
 		result = err
@@ -461,20 +427,21 @@ func runTerminalAttach(
 			result = errors.Join(result, err)
 		}
 	}
-	collectReady := func(worker <-chan error, done *bool) {
-		if *done {
-			return
-		}
+	if !frameDone {
 		select {
-		case err := <-worker:
-			joinWorkerError(err, shuttingDown)
-			*done = true
+		case frameResult = <-frameErr:
+			frameDone = true
 		default:
 		}
 	}
-
-	collectReady(frameErr, &frameDone)
-	collectReady(inputErr, &inputDone)
+	if !inputDone {
+		select {
+		case err := <-inputErr:
+			joinWorkerError(err, shuttingDown)
+			inputDone = true
+		default:
+		}
+	}
 	remoteStreamTerminated = frameDone && !shuttingDown
 
 	stopAttach()
@@ -489,10 +456,12 @@ func runTerminalAttach(
 	}
 
 	if !frameDone {
-		joinWorkerError(<-frameErr, true)
+		frameResult = <-frameErr
 	}
 	if !inputDone {
 		joinWorkerError(<-inputErr, true)
 	}
+	// The peer may acknowledge detach by closing before the detach write returns.
+	joinWorkerError(frameResult, shuttingDown || !frameDone || detached.Load())
 	return result
 }
